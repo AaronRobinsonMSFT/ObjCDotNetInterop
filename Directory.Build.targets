@@ -1,0 +1,16 @@
+<Project>
+
+  <PropertyGroup>
+    <NativeRoot>$(MSBuildThisFileDirectory)native/</NativeRoot>
+  </PropertyGroup>
+
+  <Target
+    Name="BuildObjectiveCCoreCLR"
+    AfterTargets="Build"
+    Inputs="$(NativeRoot)xm.c;$(NativeRoot)objc_types.m"
+    Outputs="$(OutputPath)libxm.dylib">
+
+    <Exec Command="clang -std=c99 -Wall -Wno-unused-function -framework Foundation -g -fpic -shared -lobjc -ObjC -o &quot;$(OutputPath)libxm.dylib&quot; $(NativeRoot)objc_types.m $(NativeRoot)xm.c" />
+  </Target>
+
+</Project>
