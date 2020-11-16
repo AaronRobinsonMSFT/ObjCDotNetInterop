@@ -6,4 +6,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Include="../native/ObjCInterop.cs">
+      <Link>ObjCInterop.cs</Link>
+    </Compile>
+  </ItemGroup>
 </Project>

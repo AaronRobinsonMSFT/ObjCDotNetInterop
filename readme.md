@@ -2,7 +2,7 @@
 
 This repository is for investigating interop between .NET and Objective-C. This investigation is done by debugging on macOS and referencing the [Xamarin-macios](https://github.com/xamarin/xamarin-macios) repository.
 
-The current focus is on non-UI Objective-C class. This permits focusing on interop fundamentals and understanding the current environment. Given this state the [`MyConsoleApp`](./MyConsoleApp/MyConsoleApp.csproj) should be the primary project of interest.
+The current focus is on non-UI Objective-C interaction. This permits focusing on interop fundamentals and understanding the current environment. Given this state the [`MyConsoleApp`](./MyConsoleApp/MyConsoleApp.csproj) should be the primary project of interest.
 
 ## Requirements
 
