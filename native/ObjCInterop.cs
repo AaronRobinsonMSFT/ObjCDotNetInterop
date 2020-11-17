@@ -4,8 +4,200 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
 
-namespace System.Runtime.InteropServices.ObjC
+namespace System.Runtime.InteropServices.ObjectiveC
 {
+    public enum CreateInstFlags
+    {
+        None
+    }
+
+    public enum CreateObjectFlags
+    {
+        None
+    }
+
+    public abstract class Wrappers
+    {
+        /// <summary>
+        /// Register the current wrappers instance as the global one for the system.
+        /// </summary>
+        /// <remarks>
+        /// This primarily enables support for <see cref="StartThreadPoolWorkItem"/>
+        /// and <see cref="EndThreadPoolWorkItem"/>.
+        /// </remarks>
+        public void RegisterAsGlobal()
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Type when entering the managed environment from an Objective-C wrapper.
+        /// </summary>
+        public struct ObjectiveCDispatch
+        {
+            public IntPtr Isa;
+            public unsafe static T GetInstance<T>(ObjectiveCDispatch* dispatchPtr) where T : class
+            {
+                throw new NotImplementedException();
+            }
+        }
+
+        /// <summary>
+        /// Get or create a Objective-C wrapper for the supplied managed object.
+        /// </summary>
+        /// <param name="instance">A managed object to wrap</param>
+        /// <param name="flags">Flags for creation</param>
+        /// <returns>An Objective-C wrapper</returns>
+        /// <see cref="CreateInst(object, CreateInstFlags)"/>
+        public IntPtr GetOrCreateInstForObject(object instance, CreateInstFlags flags)
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Called if there is currently no existing Objective-C wrapper.
+        /// </summary>
+        /// <param name="instance">A managed object to wrap</param>
+        /// <param name="flags">Flags for creation</param>
+        /// <returns>An Objective-C wrapper</returns>
+        protected abstract IntPtr CreateInst(object instance, CreateInstFlags flags);
+
+        /// <summary>
+        /// Get or create a managed wrapper for the supplied Objective-C object.
+        /// </summary>
+        /// <param name="instance">An Objective-C object</param>
+        /// <param name="flags">Flags for creation</param>
+        /// <returns>A managed wrapper</returns>
+        /// <see cref="CreateInst(object, CreateInstFlags)"/>
+        public object GetOrCreateObjectForInst(IntPtr instance, CreateObjectFlags flags)
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Called if there is currently no existing managed wrapper.
+        /// </summary>
+        /// <param name="instance">An Objective-C object</param>
+        /// <param name="flags">Flags for creation</param>
+        /// <returns>A managed wrapper</returns>
+        protected abstract object CreateObject(IntPtr instance, CreateObjectFlags flags);
+
+        /// <summary>
+        /// Get or provide a managed object wrapper for the supplied Objective-C object.
+        /// </summary>
+        /// <param name="instance">An Objective-C object</param>
+        /// <param name="flags">Flags for creation</param>
+        /// <param name="wrapperMaybe">The managed wrapper to use if one doesn't exist</param>
+        /// <returns>A managed wrapper</returns>
+        public object GetOrRegisterObjectForInst(IntPtr instance, CreateObjectFlags flags, object wrapperMaybe)
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Given a <see cref="Delegate"/>, create an Objective-C block that can be passed
+        /// to the Objective-C environment.
+        /// </summary>
+        /// <param name="delegateInstance">The delegate to wrap</param>
+        /// <param name="delegateFunctionPointer">The function pointer to call</param>
+        /// <param name="signature">The Objective-C type signature of the function</param>
+        /// <returns>An Objective-C block</returns>
+        /// <remarks>
+        /// See <see href="https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html">Objective-C Type Encodings</see> for how to specify <paramref name="signature"/>.
+        ///
+        /// See <see href="http://clang.llvm.org/docs/Block-ABI-Apple.html">Objective-C Block ABI</see> for the supported contract.
+        /// </remarks>
+        public IntPtr CreateBlock(Delegate delegateInstance, IntPtr delegateFunctionPointer, string signature)
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Type used to represent the dispatching function and associated context.
+        /// </summary>
+        public record BlockProxy
+        {
+            /// <summary>
+            /// Block instance.
+            /// </summary>
+            public IntPtr Block { get; init; }
+
+            /// <summary>
+            /// The function pointer to call for dispatch.
+            /// </summary>
+            /// <remarks>
+            /// The C# function pointer syntax is dependent on the signature of the
+            /// block, but does takes the <see cref="Block"/> as the first argument.
+            /// For example:
+            /// <code>
+            /// delegate* unmanaged[Cdecl]&lt;IntPtr [, arg]*, ret&gt;
+            /// </code>
+            /// </remarks>
+            public IntPtr FunctionPointer { get; init; }
+        }
+
+        /// <summary>
+        /// Create a <see cref="BlockProxy"/> for <paramref name="block"/>.
+        /// </summary>
+        /// <param name="block">Objective-C block</param>
+        /// <returns>Proxy to use for dispatch</returns>
+        /// <remarks>
+        /// See <see href="http://clang.llvm.org/docs/Block-ABI-Apple.html">Objective-C Block ABI</see> for the supported contract.
+        /// </remarks>
+        public BlockProxy CreateBlockProxy(IntPtr block)
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Create a <see cref="Wrappers"/> instance.
+        /// </summary>
+        protected Wrappers()
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Allows the implementer of the Objective-C wrapper class
+        /// to provide overrides to the 'objc_msgSend*' APIs for the
+        /// Objective-C runtime.
+        /// </summary>
+        /// <param name="objc_msgSend"></param>
+        /// <param name="objc_msgSendSuper"></param>
+        /// <param name="objc_msgSend_stret"></param>
+        /// <param name="objc_msgSendSuper_stret"></param>
+        /// <remarks>
+        /// Providing these overrides can enable support for Objective-C
+        /// exception propagation as well as variadic argument support.
+        /// </remarks>
+        protected void SetMessageSendCallbacks(
+            IntPtr objc_msgSend,
+            IntPtr objc_msgSendSuper,
+            IntPtr objc_msgSend_stret,
+            IntPtr objc_msgSendSuper_stret)
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Provides a start callout for the ThreadPool API when a new
+        /// work item is to be schedule.
+        /// </summary>
+        /// <remarks>
+        /// Addresses https://github.com/dotnet/runtime/issues/44213
+        /// </remarks>
+        protected abstract void StartThreadPoolWorkItem();
+
+        /// <summary>
+        /// Provides an end callout for the ThreadPool API when a
+        /// work item is completed.
+        /// </summary>
+        /// <remarks>
+        /// Addresses https://github.com/dotnet/runtime/issues/44213
+        /// </remarks>
+        protected abstract void EndThreadPoolWorkItem();
+    }
+
     // Objective-C runtime types
     [StructLayout(LayoutKind.Sequential)]
     public readonly struct id

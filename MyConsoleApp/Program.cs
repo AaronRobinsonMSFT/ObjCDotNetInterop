@@ -2,7 +2,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ObjC;
+using System.Runtime.InteropServices.ObjectiveC;
 
 namespace MyConsoleApp
 {
@@ -263,8 +263,6 @@ namespace MyConsoleApp
                 (typeof(NSObject), nameof(NSObject)),
                 (typeof(TestObjC), nameof(TestObjC)),
             });
-
-            Class cls = xm.objc_getClass("_NSConcreteStackBlock");
 
             var testObjC = new TestObjC();
             Console.WriteLine($"DoubleInt: {testObjC.DoubleInt((int)Math.PI)}");
