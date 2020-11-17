@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ObjC;
@@ -34,6 +35,8 @@ namespace MyConsoleApp
         }
     }
 
+    public delegate double DoubleDoubleBlock(double a);
+
     // Projected Objective-C type into .NET
     class TestObjC : NSObject
     {
@@ -41,7 +44,9 @@ namespace MyConsoleApp
         private static readonly SEL DoubleIntSelector;
         private static readonly SEL DoubleFloatSelector;
         private static readonly SEL DoubleDoubleSelector;
+        private static readonly SEL GetDoubleDoubleBlockSelector;
         private static readonly SEL SetProxySelector;
+        private static readonly SEL CallDoubleDoubleBlockThroughProxySelector;
 
         unsafe static TestObjC()
         {
@@ -49,7 +54,9 @@ namespace MyConsoleApp
             DoubleIntSelector = xm.sel_registerName("doubleInt:");
             DoubleFloatSelector = xm.sel_registerName("doubleFloat:");
             DoubleDoubleSelector = xm.sel_registerName("doubleDouble:");
+            GetDoubleDoubleBlockSelector = xm.sel_registerName("getDoubleDoubleBlock");
             SetProxySelector = xm.sel_registerName("setProxy:");
+            CallDoubleDoubleBlockThroughProxySelector = xm.sel_registerName("callDoubleDoubleBlockThroughProxy:");
         }
 
         public TestObjC() : base(ClassType) { }
@@ -80,6 +87,26 @@ namespace MyConsoleApp
             }
         }
 
+        public DoubleDoubleBlock GetDoubleDoubleBlock()
+        {
+            unsafe
+            {
+                id block = ((delegate* unmanaged[Cdecl]<id, SEL, id>)xm.objc_msgSend_Raw)(this.instance, GetDoubleDoubleBlockSelector);
+                if (block == xm.nil)
+                {
+                    return null;
+                }
+
+                BlockMarshaller.BlockProxy proxy = BlockMarshaller.BlockToProxy(block);
+                return new DoubleDoubleBlock(
+                    (double d) =>
+                    {
+                        double ret = ((delegate* unmanaged[Cdecl]<id, double, double>)proxy.FunctionPointer.ToPointer())(proxy.Block, d);
+                        return ret;
+                    });
+            }
+        }
+
         public void SetProxy(TestDotNet a)
         {
             unsafe
@@ -97,15 +124,24 @@ namespace MyConsoleApp
                 ((delegate* unmanaged[Cdecl]<id, SEL, id, void>)xm.objc_msgSend_Raw)(this.instance, SetProxySelector, native);
             }
         }
+
+        public double CallDoubleDoubleBlockThroughProxy(double a)
+        {
+            unsafe
+            {
+                return ((delegate* unmanaged[Cdecl]<id, SEL, double, double>)xm.objc_msgSend_Raw)(this.instance, CallDoubleDoubleBlockThroughProxySelector, a);
+            }
+        }
     }
 
     // Implemented dotnet type projected into Objective-C
     class TestDotNet : NSObject
     {
         private static readonly Class ClassType;
-        private static readonly SEL MethodIntSelector;
-        private static readonly SEL MethodFloatSelector;
-        private static readonly SEL MethodDoubleSelector;
+        private static readonly SEL DoubleIntSelector;
+        private static readonly SEL DoubleFloatSelector;
+        private static readonly SEL DoubleDoubleSelector;
+        private static readonly SEL GetDoubleDoubleBlockSelector;
 
         unsafe static TestDotNet()
         {
@@ -116,21 +152,27 @@ namespace MyConsoleApp
 
             // Register and define the class's methods.
             {
-                MethodIntSelector = xm.sel_registerName("doubleInt:");
+                DoubleIntSelector = xm.sel_registerName("doubleInt:");
                 var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, int, int>)&DoubleIntProxy;
-                xm.class_addMethod(ClassType, MethodIntSelector, impl, "i@:i");
+                xm.class_addMethod(ClassType, DoubleIntSelector, impl, "i@:i");
             }
 
             {
-                MethodFloatSelector = xm.sel_registerName("doubleFloat:");
+                DoubleFloatSelector = xm.sel_registerName("doubleFloat:");
                 var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, float, float>)&DoubleFloatProxy;
-                xm.class_addMethod(ClassType, MethodFloatSelector, impl, "f@:f");
+                xm.class_addMethod(ClassType, DoubleFloatSelector, impl, "f@:f");
             }
 
             {
-                MethodDoubleSelector = xm.sel_registerName("doubleDouble:");
+                DoubleDoubleSelector = xm.sel_registerName("doubleDouble:");
                 var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, double, double>)&DoubleDoubleProxy;
-                xm.class_addMethod(ClassType, MethodDoubleSelector, impl, "d@:d");
+                xm.class_addMethod(ClassType, DoubleDoubleSelector, impl, "d@:d");
+            }
+
+            {
+                GetDoubleDoubleBlockSelector = xm.sel_registerName("getDoubleDoubleBlock");
+                var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, nint>)&GetDoubleDoubleBlockProxy;
+                xm.class_addMethod(ClassType, GetDoubleDoubleBlockSelector, impl, "?@:");
             }
 
             // Register the type with the Objective-C runtime.
@@ -141,7 +183,7 @@ namespace MyConsoleApp
         private static int DoubleIntProxy(id self, SEL sel, int a)
         {
             Internals.TryGetObject(self, out object managed);
-            Console.WriteLine($"DoubleIntProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
+            Trace.WriteLine($"DoubleIntProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
             return ((TestDotNet)managed).DoubleInt(a);
         }
 
@@ -149,7 +191,7 @@ namespace MyConsoleApp
         private static float DoubleFloatProxy(id self, SEL sel, float a)
         {
             Internals.TryGetObject(self, out object managed);
-            Console.WriteLine($"DoubleFloatProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
+            Trace.WriteLine($"DoubleFloatProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
             return ((TestDotNet)managed).DoubleFloat(a);
         }
 
@@ -157,8 +199,31 @@ namespace MyConsoleApp
         private static double DoubleDoubleProxy(id self, SEL sel, double a)
         {
             Internals.TryGetObject(self, out object managed);
-            Console.WriteLine($"DoubleDoubleProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
+            Trace.WriteLine($"DoubleDoubleProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
             return ((TestDotNet)managed).DoubleDouble(a);
+        }
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate double DoubleDoubleBlockProxy(id blk, double a);
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        // Should be returning `id` but can't because of non-primitive return.
+        // See https://github.com/dotnet/runtime/issues/35928
+        private static nint GetDoubleDoubleBlockProxy(id self, SEL sel)
+        {
+            Internals.TryGetObject(self, out object managed);
+            Trace.WriteLine($"GetDoubleDoubleBlockProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
+
+            DoubleDoubleBlock block = ((TestDotNet)managed).GetDoubleDoubleBlock();
+            DoubleDoubleBlockProxy proxy = (id blk, double a) =>
+            {
+                Trace.WriteLine($"DoubleDoubleBlockProxy: id: {blk} a: {a}");
+                return block(a);
+            };
+
+            IntPtr fptr = Marshal.GetFunctionPointerForDelegate(proxy);
+            var handle = GCHandle.Alloc(proxy);
+            return BlockMarshaller.CreateBlock(ref handle, fptr, "d?d").value;
         }
 
         public TestDotNet()
@@ -180,6 +245,11 @@ namespace MyConsoleApp
         {
             return a * 2;
         }
+
+        public DoubleDoubleBlock GetDoubleDoubleBlock()
+        {
+            return (a) => this.DoubleDouble(a);
+        }
     }
 
     unsafe class Program
@@ -194,21 +264,29 @@ namespace MyConsoleApp
                 (typeof(TestObjC), nameof(TestObjC)),
             });
 
+            Class cls = xm.objc_getClass("_NSConcreteStackBlock");
+
             var testObjC = new TestObjC();
             Console.WriteLine($"DoubleInt: {testObjC.DoubleInt((int)Math.PI)}");
             Console.WriteLine($"DoubleFloat: {testObjC.DoubleFloat((float)Math.PI)}");
             Console.WriteLine($"DoubleDouble: {testObjC.DoubleDouble(Math.PI)}");
+
+            // Get delegate early
+            var doubleDoubleDel = testObjC.GetDoubleDoubleBlock();
 
             var testDotNet = new TestDotNet();
             testObjC.SetProxy(testDotNet);
             Console.WriteLine($"Proxied-DoubleInt: {testObjC.DoubleInt((int)Math.PI)}");
             Console.WriteLine($"Proxied-DoubleFloat: {testObjC.DoubleFloat((float)Math.PI)}");
             Console.WriteLine($"Proxied-DoubleDouble: {testObjC.DoubleDouble(Math.PI)}");
+            Console.WriteLine($"Proxied-DoubleDouble Block: {testObjC.CallDoubleDoubleBlockThroughProxy(Math.PI)}");
 
             testObjC.SetProxy(null);
             Console.WriteLine($"DoubleInt: {testObjC.DoubleInt((int)Math.PI)}");
             Console.WriteLine($"DoubleFloat: {testObjC.DoubleFloat((float)Math.PI)}");
             Console.WriteLine($"DoubleDouble: {testObjC.DoubleDouble(Math.PI)}");
+
+            Console.WriteLine($"DoubleDouble Block: {doubleDoubleDel(Math.PI)}");
         }
     }
 }

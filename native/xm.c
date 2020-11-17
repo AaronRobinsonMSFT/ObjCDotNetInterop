@@ -6,15 +6,6 @@
 #include <objc/runtime.h>
 #include <objc/message.h>
 
-void Initialize()
-{
-}
-
-void dummy()
-{
-    printf("Inside xm\n");
-}
-
 // Print out Objective-C class details
 static void debug_class(Class cls)
 {
@@ -60,9 +51,27 @@ static void debug_inst(id inst)
     debug_class(instCls);
 }
 
+void Initialize()
+{
+}
+
+void dummy(void* ptr)
+{
+    //debug_inst(ptr);
+    printf("Inside xm\n");
+}
+
 void* Get_objc_msgSend()
 {
     return (void*)&objc_msgSend;
+}
+
+// Forward declare the needed stack block class.
+extern void* _NSConcreteStackBlock;
+
+void* Get_NSConcreteStackBlock()
+{
+    return (void*)&_NSConcreteStackBlock;
 }
 
 Class objc_getMetaClass_proxy(const char *name)
@@ -111,6 +120,20 @@ void objc_destructInstance_proxy(id obj)
     void* addr = objc_destructInstance(obj);
     assert(addr == obj);
     (void)addr;
+}
+
+extern id _Block_copy(id);
+extern void _Block_release(id);
+
+id Block_copy_proxy(id block)
+{
+    id new_block = _Block_copy(block);
+    return new_block;
+}
+
+void Block_release_proxy(id block)
+{
+    _Block_release(block);
 }
 
 // namespace

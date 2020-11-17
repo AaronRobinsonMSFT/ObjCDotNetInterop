@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace System.Runtime.InteropServices.ObjC
@@ -76,12 +78,17 @@ namespace System.Runtime.InteropServices.ObjC
         public extern static void Initialize();
 
         [DllImport(nameof(xm))]
-        public extern static void dummy();
+        public extern static void dummy(nint ptr);
 
         public static readonly void* objc_msgSend_Raw = Get_objc_msgSend();
 
         [DllImport(nameof(xm))]
         private extern static void* Get_objc_msgSend();
+
+        public static readonly void* _NSConcreteStackBlock_Raw = Get_NSConcreteStackBlock();
+
+        [DllImport(nameof(xm))]
+        private extern static void* Get_NSConcreteStackBlock();
 
         [DllImport(nameof(xm), EntryPoint = "objc_getMetaClass_proxy")]
         public extern static Class objc_getMetaClass(
@@ -117,6 +124,12 @@ namespace System.Runtime.InteropServices.ObjC
 
         [DllImport(nameof(xm), EntryPoint = "objc_destructInstance_proxy")]
         public extern static void objc_destructInstance(id obj);
+
+        [DllImport(nameof(xm), EntryPoint = "Block_copy_proxy")]
+        public extern static id Block_copy(id block);
+
+        [DllImport(nameof(xm), EntryPoint = "Block_release_proxy")]
+        public extern static void Block_release(id block);
 
         public static readonly Class noclass = new Class(0);
         public static readonly id nil = new id(0);
@@ -169,6 +182,112 @@ namespace System.Runtime.InteropServices.ObjC
             finally
             {
                 RegisteredIdentityLock.ExitReadLock();
+            }
+        }
+    }
+
+    public static class BlockMarshaller
+    {
+        // http://clang.llvm.org/docs/Block-ABI-Apple.html#high-level
+        [StructLayout(LayoutKind.Sequential)]
+        private unsafe struct BlockLiteral
+        {
+            public void* Isa;
+            public int Flags;
+            public int Reserved;
+            public void* Invoke; // delegate* unmanaged[Cdecl]<BlockLiteral* , ...args, ret>
+            public void* BlockDescriptor;
+
+            // Extension of ABI to help with .NET lifetime.
+            public IntPtr DelegateGCHandle;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private unsafe struct DelegateBlockDesc
+        {
+            public nint Reserved;
+            public nint Size;
+            public delegate* unmanaged[Cdecl]<void*, void*, void> Copy_helper;
+            public delegate* unmanaged[Cdecl]<void*, void> Dispose_helper;
+            public void* Signature;
+
+            // Extension of ABI to help with .NET lifetime.
+            public uint RefCount;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private unsafe static void CopyBlock(void* dst, void* src)
+        {
+            var blockSrc = (BlockLiteral*)src;
+            var blockDescSrc = (DelegateBlockDesc*)blockSrc->BlockDescriptor;
+            var blockDst = (BlockLiteral*)dst;
+
+            uint count = Interlocked.Decrement(ref blockDescSrc->RefCount);
+            Debug.Assert(count > 1);
+            blockDst->BlockDescriptor = blockDescSrc;
+            blockDst->DelegateGCHandle = blockSrc->DelegateGCHandle;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private unsafe static void DisposeBlock(void* blk)
+        {
+            var block = (BlockLiteral*)blk;
+            var blockDesc = (DelegateBlockDesc*)block->BlockDescriptor;
+
+            // Cleanup the delegate's handle
+            GCHandle.FromIntPtr(block->DelegateGCHandle).Free();
+
+            uint count = Interlocked.Decrement(ref blockDesc->RefCount);
+            if (count != 0)
+            {
+                return;
+            }
+
+            Marshal.FreeCoTaskMem((IntPtr)blockDesc->Signature);
+            Marshal.FreeCoTaskMem((IntPtr)blockDesc);
+            block->BlockDescriptor = null;
+        }
+
+        public record BlockProxy
+        {
+            public id Block { get; init; }
+            public IntPtr FunctionPointer { get; init; }
+
+            ~BlockProxy()
+            {
+                xm.Block_release(this.Block);
+            }
+        }
+
+        // Ownership has been transferred at this point (i.e. someone else has called [block copy]).
+        public static BlockProxy BlockToProxy(id block)
+        {
+            unsafe
+            {
+                BlockLiteral* blockLiteral = (BlockLiteral*)block.value;
+                return new BlockProxy() { Block = block, FunctionPointer = (IntPtr)blockLiteral->Invoke };
+            }
+        }
+
+        public static id CreateBlock(ref GCHandle delegateHandle, IntPtr delegateFunctionPointer, string signature)
+        {
+            unsafe
+            {
+                var desc = (DelegateBlockDesc*)Marshal.AllocCoTaskMem(sizeof(DelegateBlockDesc));
+                desc->Size = sizeof(BlockLiteral);
+                desc->Copy_helper = &CopyBlock;
+                desc->Dispose_helper = &DisposeBlock;
+                desc->Signature = Marshal.StringToCoTaskMemUTF8(signature).ToPointer();
+                desc->RefCount = 1;
+
+                var block = (BlockLiteral*)Marshal.AllocCoTaskMem(sizeof(BlockLiteral));
+                block->Isa = xm._NSConcreteStackBlock_Raw;
+                block->Flags = (1 << 25) | (1 << 30); // Descriptor contains copy/dispose and signature.
+                block->Invoke = delegateFunctionPointer.ToPointer();
+                block->BlockDescriptor = desc;
+                block->DelegateGCHandle = GCHandle.ToIntPtr(delegateHandle);
+
+                return new id((nint)block);
             }
         }
     }
