@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
+#include <string.h>
 
 #include <objc/objc.h>
 #include <objc/runtime.h>
@@ -49,6 +50,16 @@ static void debug_inst(id inst)
 
     Class instCls = object_getClass(inst);
     debug_class(instCls);
+}
+
+static const char* clr_strdup(const char* str)
+{
+    if (!str)
+        return NULL;
+
+    size_t len = strlen(str);
+    char* buffer = (char*)malloc(len + 1); // CLR memory contract
+    return strcpy(buffer, str);
 }
 
 void Initialize()
@@ -119,6 +130,12 @@ Class objc_getClass_proxy(const char *name)
     return cls;
 }
 
+const char* object_getClassName_proxy(id obj)
+{
+    const char* name = object_getClassName(obj);
+    return clr_strdup(name);
+}
+
 Class objc_allocateClassPair_proxy(Class superclass, const char *name, size_t extraBytes)
 {
     Class cls = objc_allocateClassPair(superclass, name, extraBytes);
@@ -146,6 +163,12 @@ id class_createInstance_proxy(Class cls, size_t extraBytes)
 {
     id inst = class_createInstance(cls, extraBytes);
     return inst;
+}
+
+const char* class_getName_proxy(Class cls)
+{
+    const char* name = class_getName(cls);
+    return clr_strdup(name);
 }
 
 void objc_destructInstance_proxy(id obj)

@@ -511,6 +511,10 @@ namespace System.Runtime.InteropServices.ObjectiveC
         public extern static Class objc_getClass(
             [MarshalAs(UnmanagedType.LPStr)] string name);
 
+        [DllImport(nameof(xm), EntryPoint = "object_getClassName_proxy")]
+        [return: MarshalAs(UnmanagedType.LPStr)]
+        public extern static string object_getClassName(id obj);
+
         [DllImport(nameof(xm), EntryPoint = "objc_allocateClassPair_proxy")]
         public extern static Class objc_allocateClassPair(
             Class superclass,
@@ -534,6 +538,10 @@ namespace System.Runtime.InteropServices.ObjectiveC
 
         [DllImport(nameof(xm), EntryPoint = "class_createInstance_proxy")]
         public extern static id class_createInstance(Class cls, nint extraBytes);
+
+        [DllImport(nameof(xm), EntryPoint = "class_getName_proxy")]
+        [return: MarshalAs(UnmanagedType.LPStr)]
+        public extern static string class_getName(Class cls);
 
         [DllImport(nameof(xm), EntryPoint = "objc_destructInstance_proxy")]
         public extern static void objc_destructInstance(id obj);

@@ -15,13 +15,14 @@ namespace MyConsoleApp
         public static readonly Wrappers Instance = new MyWrappers();
 
         protected override IntPtr ComputeInstClass(object instance, CreateInstFlags flags)
-        {
-            return Registrar.GetClass(instance.GetType()).value;
-        }
+            => Registrar.GetClass(instance.GetType()).value;
 
         protected override object CreateObject(IntPtr instance, CreateObjectFlags flags)
         {
-            throw new NotImplementedException();
+            string className = xm.object_getClassName(instance);
+
+            var factory = Registrar.GetFactory(className);
+            return factory(instance, flags);
         }
 
         protected override void EndThreadPoolWorkItem()
@@ -33,17 +34,20 @@ namespace MyConsoleApp
 
     public static class Registrar
     {
-        public static void Initialize((Type mt, string nt)[] typeMapping)
+        public delegate object FactoryFunc(id instance, CreateObjectFlags flags);
+
+        public static void Initialize((Type mt, string nt, FactoryFunc factory)[] typeMapping)
         {
-            foreach (var tm in typeMapping)
+            foreach (var (mt, nt, factory) in typeMapping)
             {
-                Class nClass = xm.objc_getClass(tm.nt);
-                RegisterClass(tm.mt, nClass);
+                Class nClass = xm.objc_getClass(nt);
+                RegisterClass(mt, nClass, factory);
             }
         }
 
         private static readonly ReaderWriterLockSlim RegisteredClassesLock = new ReaderWriterLockSlim();
         private static readonly Dictionary<Type, Class> RegisteredClasses = new Dictionary<Type, Class>();
+        private static readonly Dictionary<string, FactoryFunc> RegisteredFactories = new Dictionary<string, FactoryFunc>();
         public static Class GetClass(Type type)
         {
             RegisteredClassesLock.EnterReadLock();
@@ -63,7 +67,26 @@ namespace MyConsoleApp
             }
         }
 
-        public static void RegisterClass(Type type, Class klass)
+        public static FactoryFunc GetFactory(string className)
+        {
+            RegisteredClassesLock.EnterReadLock();
+
+            try
+            {
+                if (!RegisteredFactories.TryGetValue(className, out FactoryFunc factory))
+                {
+                    throw new Exception("Unknown class");
+                }
+
+                return factory;
+            }
+            finally
+            {
+                RegisteredClassesLock.ExitReadLock();
+            }
+        }
+
+        public static void RegisterClass(Type type, Class klass, FactoryFunc factory)
         {
             if (klass == xm.noclass)
             {
@@ -74,7 +97,10 @@ namespace MyConsoleApp
 
             try
             {
+                string className = xm.class_getName(klass);
+
                 RegisteredClasses.Add(type, klass);
+                RegisteredFactories.Add(className, factory);
             }
             finally
             {
@@ -93,7 +119,7 @@ namespace MyConsoleApp
             this.instance = MyWrappers.Instance.GetOrCreateInstForObject(this, CreateInstFlags.None);
         }
 
-        public NSObject(id instance)
+        internal NSObject(id instance)
         {
             MyWrappers.Instance.GetOrRegisterObjectForInst(instance.value, CreateObjectFlags.None, this);
             this.instance = instance;
@@ -138,6 +164,10 @@ namespace MyConsoleApp
 
         public TestObjC()
             : base(ClassType)
+        { }
+
+        internal TestObjC(id instance)
+            : base(instance)
         { }
 
         public int DoubleInt(int a)
@@ -225,7 +255,10 @@ namespace MyConsoleApp
             // Create the class.
             Class baseClass = Registrar.GetClass(typeof(NSObject));
             ClassType = xm.objc_allocateClassPair(baseClass, nameof(TestDotNet), 0);
-            Registrar.RegisterClass(typeof(TestDotNet), ClassType);
+            Registrar.RegisterClass(
+                typeof(TestDotNet),
+                ClassType,
+                (id inst, CreateObjectFlags flags) => throw new NotImplementedException());
 
             // Register and define the class's methods.
             {
@@ -353,10 +386,10 @@ namespace MyConsoleApp
         {
             xm.Initialize();
 
-            Registrar.Initialize(new[]
+            Registrar.Initialize(new (Type, string, Registrar.FactoryFunc)[]
             {
-                (typeof(NSObject), nameof(NSObject)),
-                (typeof(TestObjC), nameof(TestObjC)),
+                (typeof(NSObject), nameof(NSObject), (id i, CreateObjectFlags f) => new NSObject(i)),
+                (typeof(TestObjC), nameof(TestObjC), (id i, CreateObjectFlags f) => new TestObjC(i)),
             });
 
             var testObjC = new TestObjC();
