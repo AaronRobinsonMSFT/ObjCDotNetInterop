@@ -1,32 +1,109 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ObjectiveC;
+using System.Threading;
+
+using CreateObjectFlags = System.Runtime.InteropServices.ObjectiveC.CreateObjectFlags;
 
 namespace MyConsoleApp
 {
+    public sealed class MyWrappers : Wrappers
+    {
+        public static readonly Wrappers Instance = new MyWrappers();
+
+        protected override IntPtr ComputeInstClass(object instance, CreateInstFlags flags)
+        {
+            return Registrar.GetClass(instance.GetType()).value;
+        }
+
+        protected override object CreateObject(IntPtr instance, CreateObjectFlags flags)
+        {
+            throw new NotImplementedException();
+        }
+
+        protected override void EndThreadPoolWorkItem()
+            => throw new NotImplementedException();
+
+        protected override void StartThreadPoolWorkItem()
+            => throw new NotImplementedException();
+    }
+
+    public static class Registrar
+    {
+        public static void Initialize((Type mt, string nt)[] typeMapping)
+        {
+            foreach (var tm in typeMapping)
+            {
+                Class nClass = xm.objc_getClass(tm.nt);
+                RegisterClass(tm.mt, nClass);
+            }
+        }
+
+        private static readonly ReaderWriterLockSlim RegisteredClassesLock = new ReaderWriterLockSlim();
+        private static readonly Dictionary<Type, Class> RegisteredClasses = new Dictionary<Type, Class>();
+        public static Class GetClass(Type type)
+        {
+            RegisteredClassesLock.EnterReadLock();
+
+            try
+            {
+                if (!RegisteredClasses.TryGetValue(type, out Class klass))
+                {
+                    throw new Exception("Unknown class");
+                }
+
+                return klass;
+            }
+            finally
+            {
+                RegisteredClassesLock.ExitReadLock();
+            }
+        }
+
+        public static void RegisterClass(Type type, Class klass)
+        {
+            if (klass == xm.noclass)
+            {
+                throw new Exception("Invalid native class");
+            }
+
+            RegisteredClassesLock.EnterWriteLock();
+
+            try
+            {
+                RegisteredClasses.Add(type, klass);
+            }
+            finally
+            {
+                RegisteredClassesLock.ExitWriteLock();
+            }
+        }
+    }
+
     // Base type for all Objective-C types.
     class NSObject
     {
-        private static readonly Class ClassType;
-        unsafe static NSObject()
-        {
-            ClassType = Registrar.GetClass(typeof(NSObject));
-        }
-
         protected readonly id instance;
 
         public NSObject()
         {
-            this.instance = xm.class_createInstance(ClassType, 0);
-            Internals.RegisterIdentity(this, this.instance);
+            this.instance = MyWrappers.Instance.GetOrCreateInstForObject(this, CreateInstFlags.None);
+        }
+
+        public NSObject(id instance)
+        {
+            MyWrappers.Instance.GetOrRegisterObjectForInst(instance.value, CreateObjectFlags.None, this);
+            this.instance = instance;
         }
 
         protected NSObject(Class klass)
         {
-            this.instance = xm.class_createInstance(klass, 0);
-            Internals.RegisterIdentity(this, this.instance);
+            id instance = xm.class_createInstance(klass, 0);
+            MyWrappers.Instance.GetOrRegisterObjectForInst(instance.value, CreateObjectFlags.None, this);
+            this.instance = instance;
         }
 
         ~NSObject()
@@ -59,9 +136,9 @@ namespace MyConsoleApp
             CallDoubleDoubleBlockThroughProxySelector = xm.sel_registerName("callDoubleDoubleBlockThroughProxy:");
         }
 
-        public TestObjC() : base(ClassType) { }
-
-        protected TestObjC(Class klass) : base(klass) { }
+        public TestObjC()
+            : base(ClassType)
+        { }
 
         public int DoubleInt(int a)
         {
@@ -97,7 +174,7 @@ namespace MyConsoleApp
                     return null;
                 }
 
-                BlockMarshaller.BlockProxy proxy = BlockMarshaller.BlockToProxy(block);
+                Wrappers.BlockProxy proxy = MyWrappers.Instance.CreateBlockProxy(block.value);
                 return new DoubleDoubleBlock(
                     (double d) =>
                     {
@@ -116,9 +193,9 @@ namespace MyConsoleApp
                 {
                     native = xm.nil;
                 }
-                else if (!Internals.TryGetIdentity(a, out native))
+                else
                 {
-                    throw new Exception("No native mapping");
+                    native = MyWrappers.Instance.GetOrCreateInstForObject(a, CreateInstFlags.None);
                 }
 
                 ((delegate* unmanaged[Cdecl]<id, SEL, id, void>)xm.objc_msgSend_Raw)(this.instance, SetProxySelector, native);
@@ -175,6 +252,15 @@ namespace MyConsoleApp
                 xm.class_addMethod(ClassType, GetDoubleDoubleBlockSelector, impl, "?@:");
             }
 
+            // Override the retain/release methods for memory management.
+            {
+                SEL retainSelector = xm.sel_registerName("retain");
+                SEL releaseSelector = xm.sel_registerName("release");
+                Wrappers.GetRetainReleaseMethods(out IntPtr retainImpl, out IntPtr releaseImpl);
+                xm.class_addMethod(ClassType, retainSelector, new IMP(retainImpl), ":@:");
+                xm.class_addMethod(ClassType, releaseSelector, new IMP(releaseImpl), "v@:");
+            }
+
             // Register the type with the Objective-C runtime.
             xm.objc_registerClassPair(ClassType);
         }
@@ -182,25 +268,34 @@ namespace MyConsoleApp
         [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
         private static int DoubleIntProxy(id self, SEL sel, int a)
         {
-            Internals.TryGetObject(self, out object managed);
-            Trace.WriteLine($"DoubleIntProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
-            return ((TestDotNet)managed).DoubleInt(a);
+            unsafe
+            {
+                TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
+                Trace.WriteLine($"DoubleIntProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
+                return managed.DoubleInt(a);
+            }
         }
 
         [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
         private static float DoubleFloatProxy(id self, SEL sel, float a)
         {
-            Internals.TryGetObject(self, out object managed);
-            Trace.WriteLine($"DoubleFloatProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
-            return ((TestDotNet)managed).DoubleFloat(a);
+            unsafe
+            {
+                TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
+                Trace.WriteLine($"DoubleFloatProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
+                return managed.DoubleFloat(a);
+            }
         }
 
         [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
         private static double DoubleDoubleProxy(id self, SEL sel, double a)
         {
-            Internals.TryGetObject(self, out object managed);
-            Trace.WriteLine($"DoubleDoubleProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
-            return ((TestDotNet)managed).DoubleDouble(a);
+            unsafe
+            {
+                TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
+                Trace.WriteLine($"DoubleDoubleProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
+                return managed.DoubleDouble(a);
+            }
         }
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -211,25 +306,25 @@ namespace MyConsoleApp
         // See https://github.com/dotnet/runtime/issues/35928
         private static nint GetDoubleDoubleBlockProxy(id self, SEL sel)
         {
-            Internals.TryGetObject(self, out object managed);
-            Trace.WriteLine($"GetDoubleDoubleBlockProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
-
-            DoubleDoubleBlock block = ((TestDotNet)managed).GetDoubleDoubleBlock();
-            DoubleDoubleBlockProxy proxy = (id blk, double a) =>
+            unsafe
             {
-                Trace.WriteLine($"DoubleDoubleBlockProxy: id: {blk} a: {a}");
-                return block(a);
-            };
+                TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
+                Trace.WriteLine($"GetDoubleDoubleBlockProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
 
-            IntPtr fptr = Marshal.GetFunctionPointerForDelegate(proxy);
-            var handle = GCHandle.Alloc(proxy);
-            return BlockMarshaller.CreateBlock(ref handle, fptr, "d?d").value;
+                DoubleDoubleBlock block = managed.GetDoubleDoubleBlock();
+                DoubleDoubleBlockProxy proxy = (id blk, double a) =>
+                {
+                    Trace.WriteLine($"DoubleDoubleBlockProxy: id: {blk} a: {a}");
+                    return block(a);
+                };
+
+                IntPtr fptr = Marshal.GetFunctionPointerForDelegate(proxy);
+                return MyWrappers.Instance.CreateBlock(proxy, fptr, "d?d");
+            }
         }
 
         public TestDotNet()
-            : base(ClassType)
-        {
-        }
+        { }
 
         public int DoubleInt(int a)
         {

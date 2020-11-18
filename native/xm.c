@@ -61,6 +61,25 @@ void dummy(void* ptr)
     printf("Inside xm\n");
 }
 
+static id clr_retain(id self, SEL sel)
+{
+    return self;
+}
+
+static void clr_release(id self, SEL sel)
+{
+}
+
+void* Get_clr_retain()
+{
+    return (void*)&clr_retain;
+}
+
+void* Get_clr_release()
+{
+    return (void*)&clr_release;
+}
+
 void* Get_objc_msgSend()
 {
     return (void*)&objc_msgSend;
@@ -120,6 +139,12 @@ void objc_destructInstance_proxy(id obj)
     void* addr = objc_destructInstance(obj);
     assert(addr == obj);
     (void)addr;
+}
+
+void* object_getIndexedIvars_proxy(id obj)
+{
+    void* ptr = object_getIndexedIvars(obj);
+    return ptr;
 }
 
 extern id _Block_copy(id);
