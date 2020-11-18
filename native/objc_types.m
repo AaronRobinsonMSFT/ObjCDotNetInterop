@@ -60,6 +60,10 @@ doubleDoubleBlock _block;
 }
 - (void)setProxy: (TestDotNet*) proxy
 {
+    if (_proxy != nil)
+    {
+        [_proxy release];
+    }
     _proxy = proxy;
 }
 - (double)callDoubleDoubleBlockThroughProxy:(double) a

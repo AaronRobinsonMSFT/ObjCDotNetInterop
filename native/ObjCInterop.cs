@@ -41,10 +41,16 @@ namespace System.Runtime.InteropServices.ObjectiveC
             public IntPtr Isa;
             public unsafe static T GetInstance<T>(IdDispatch* dispatchPtr) where T : class
             {
-                var gcHandleDst = (void**)xm.object_getIndexedIvars((nint)dispatchPtr);
-                var gcHandle = GCHandle.FromIntPtr(new IntPtr(*gcHandleDst));
+                var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars((nint)dispatchPtr);
+                var gcHandle = GCHandle.FromIntPtr(lifetime->GCHandle);
                 return (T)gcHandle.Target;
             }
+        }
+
+        private struct ManagedObjectWrapperLifetime
+        {
+            public nint GCHandle;
+            public nint RefCount;
         }
 
         /// <summary>
@@ -64,15 +70,16 @@ namespace System.Runtime.InteropServices.ObjectiveC
 
             IntPtr klass = this.ComputeInstClass(instance, flags);
 
-            // Add pointer size for the GC Handle.
-            native = xm.class_createInstance(klass, IntPtr.Size);
-
             unsafe
             {
-                var gcHandleDst = (void**)xm.object_getIndexedIvars(native);
+                // Add a lifetime size for the GC Handle.
+                native = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime));
+
+                var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(native);
                 IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
-                Trace.WriteLine($"GCHandle: 0x{gcptr.ToInt64():x}");
-                *gcHandleDst = gcptr.ToPointer();
+                Trace.WriteLine($"Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
+                lifetime->GCHandle = gcptr;
+                lifetime->RefCount = 1;
             }
 
             Internals.RegisterIdentity(instance, native);

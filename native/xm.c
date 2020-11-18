@@ -61,13 +61,27 @@ void dummy(void* ptr)
     printf("Inside xm\n");
 }
 
+typedef struct
+{
+    size_t gcHandle;
+    size_t refCount;
+} ManagedObjectWrapperLifetime;
+
 static id clr_retain(id self, SEL sel)
 {
+    ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
+    lifetime->refCount++;
     return self;
 }
 
 static void clr_release(id self, SEL sel)
 {
+    ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
+    lifetime->refCount--;
+    if (!lifetime->refCount)
+    {
+        printf("Destroyed: %p\n", (void*)self);
+    }
 }
 
 void* Get_clr_retain()
