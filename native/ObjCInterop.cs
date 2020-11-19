@@ -301,8 +301,9 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// Objective-C runtime.
         /// </summary>
         /// <param name="objc_msgSend"></param>
-        /// <param name="objc_msgSendSuper"></param>
+        /// <param name="objc_msgSend_fpret"></param>
         /// <param name="objc_msgSend_stret"></param>
+        /// <param name="objc_msgSendSuper"></param>
         /// <param name="objc_msgSendSuper_stret"></param>
         /// <remarks>
         /// Providing these overrides can enable support for Objective-C
@@ -310,8 +311,9 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// </remarks>
         protected void SetMessageSendCallbacks(
             IntPtr objc_msgSend,
-            IntPtr objc_msgSendSuper,
+            IntPtr objc_msgSend_fpret,
             IntPtr objc_msgSend_stret,
+            IntPtr objc_msgSendSuper,
             IntPtr objc_msgSendSuper_stret)
         {
             throw new NotImplementedException();
