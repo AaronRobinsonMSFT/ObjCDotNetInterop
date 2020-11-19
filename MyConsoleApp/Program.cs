@@ -6,6 +6,8 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ObjectiveC;
 using System.Threading;
 
+using ObjCRuntime;
+
 using CreateObjectFlags = System.Runtime.InteropServices.ObjectiveC.CreateObjectFlags;
 
 namespace MyConsoleApp

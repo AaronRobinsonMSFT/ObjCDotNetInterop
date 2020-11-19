@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyXamarinApp", "MyXamarinAp
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyConsoleApp", "MyConsoleApp\MyConsoleApp.csproj", "{7EC21A84-9633-4526-8BCE-9DA550466F4A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ObjCInterop", "ObjCInterop\ObjCInterop.csproj", "{5FD94D65-6F74-4056-AD39-A3F6F5FEA588}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +23,10 @@ Global
 		{7EC21A84-9633-4526-8BCE-9DA550466F4A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{7EC21A84-9633-4526-8BCE-9DA550466F4A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7EC21A84-9633-4526-8BCE-9DA550466F4A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5FD94D65-6F74-4056-AD39-A3F6F5FEA588}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5FD94D65-6F74-4056-AD39-A3F6F5FEA588}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5FD94D65-6F74-4056-AD39-A3F6F5FEA588}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5FD94D65-6F74-4056-AD39-A3F6F5FEA588}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
