@@ -16,8 +16,28 @@ namespace MyConsoleApp
     {
         public static readonly Wrappers Instance = new MyWrappers();
 
-        protected override IntPtr ComputeInstClass(object instance, CreateInstFlags flags)
+        protected override IntPtr ComputeInstanceClass(object instance, CreateInstanceFlags flags)
             => Registrar.GetClass(instance.GetType()).value;
+
+        [UnmanagedCallersOnly]
+        private unsafe static int ABI_IntBlock(BlockDispatch* b, int a)
+        {
+            return BlockDispatch.GetInstance<IntBlock>(b)(a);
+        }
+
+        protected override IntPtr GetBlockInvokeAndSignature(Delegate del, CreateInstanceFlags flags, out string signature)
+        {
+            if (del is IntBlock)
+            {
+                signature = "i?i";
+                unsafe
+                {
+                    return (IntPtr)(delegate* unmanaged<BlockDispatch*, int, int>)&ABI_IntBlock;
+                }
+            }
+
+            throw new NotSupportedException();
+        }
 
         protected override object CreateObject(IntPtr instance, CreateObjectFlags flags)
         {
@@ -27,11 +47,19 @@ namespace MyConsoleApp
             return factory(instance, flags);
         }
 
-        protected override void EndThreadPoolWorkItem()
-            => throw new NotImplementedException();
-
-        protected override void StartThreadPoolWorkItem()
-            => throw new NotImplementedException();
+        public override void GetMessageSendCallbacks(
+            out IntPtr objc_msgSend,
+            out IntPtr objc_msgSend_fpret,
+            out IntPtr objc_msgSend_stret,
+            out IntPtr objc_msgSendSuper,
+            out IntPtr objc_msgSendSuper_stret)
+        {
+            objc_msgSend = IntPtr.Zero;
+            objc_msgSend_fpret = IntPtr.Zero;
+            objc_msgSend_stret = IntPtr.Zero;
+            objc_msgSendSuper = IntPtr.Zero;
+            objc_msgSendSuper_stret = IntPtr.Zero;
+        }
     }
 
     public static class Registrar
@@ -116,52 +144,91 @@ namespace MyConsoleApp
     {
         protected readonly id instance;
 
+        /// <summary>
+        /// Called for .NET types projected into Objective-C.
+        /// </summary>
         public NSObject()
         {
-            this.instance = MyWrappers.Instance.GetOrCreateInstForObject(this, CreateInstFlags.None);
+            this.instance = MyWrappers.Instance.GetOrCreateInstanceForObject(this, CreateInstanceFlags.None);
         }
 
-        internal NSObject(id instance)
+        /// <summary>
+        /// Called for existing Objective-C types entering .NET.
+        /// </summary>
+        /// <param name="instance"></param>
+        public NSObject(id instance)
         {
-            MyWrappers.Instance.GetOrRegisterObjectForInst(instance.value, CreateObjectFlags.None, this);
+            MyWrappers.Instance.GetOrRegisterObjectForInstance(instance.value, CreateObjectFlags.None, this);
             this.instance = instance;
         }
 
+        /// <summary>
+        /// Called for instantiating Objective-C types in .NET.
+        /// </summary>
+        /// <param name="klass"></param>
         protected NSObject(Class klass)
+            : this(xm.class_createInstance(klass, 0))
         {
-            id instance = xm.class_createInstance(klass, 0);
-            MyWrappers.Instance.GetOrRegisterObjectForInst(instance.value, CreateObjectFlags.None, this);
-            this.instance = instance;
-        }
-
-        ~NSObject()
-        {
-            xm.objc_destructInstance(this.instance);
         }
     }
 
-    public delegate double DoubleDoubleBlock(double a);
+    public delegate int IntBlock(int a);
 
     // Projected Objective-C type into .NET
     class TestObjC : NSObject
     {
+
         private static readonly Class ClassType;
-        private static readonly SEL DoubleIntSelector;
         private static readonly SEL DoubleFloatSelector;
         private static readonly SEL DoubleDoubleSelector;
-        private static readonly SEL GetDoubleDoubleBlockSelector;
-        private static readonly SEL SetProxySelector;
-        private static readonly SEL CallDoubleDoubleBlockThroughProxySelector;
+        private static readonly SEL UsePropertiesSelector;
+
+        private static readonly SEL GetIntBlockPropSelector;
+        private static readonly SEL SetIntBlockPropSelector;
+        private static readonly SEL GetIntBlockPropStaticSelector;
+        private static readonly SEL SetIntBlockPropStaticSelector;
 
         unsafe static TestObjC()
         {
             ClassType = Registrar.GetClass(typeof(TestObjC));
-            DoubleIntSelector = xm.sel_registerName("doubleInt:");
             DoubleFloatSelector = xm.sel_registerName("doubleFloat:");
             DoubleDoubleSelector = xm.sel_registerName("doubleDouble:");
-            GetDoubleDoubleBlockSelector = xm.sel_registerName("getDoubleDoubleBlock");
-            SetProxySelector = xm.sel_registerName("setProxy:");
-            CallDoubleDoubleBlockThroughProxySelector = xm.sel_registerName("callDoubleDoubleBlockThroughProxy:");
+            UsePropertiesSelector = xm.sel_registerName("useProperties");
+
+            GetIntBlockPropSelector = xm.sel_registerName("intBlockProp");
+            SetIntBlockPropSelector = xm.sel_registerName("setIntBlockProp:");
+            GetIntBlockPropStaticSelector = xm.sel_registerName("intBlockPropStatic");
+            SetIntBlockPropStaticSelector = xm.sel_registerName("setIntBlockPropStatic:");
+        }
+
+        public static IntBlock IntBlockPropStatic
+        {
+            get
+            {
+                unsafe
+                {
+                    id block = ((delegate* unmanaged[Cdecl]<Class, SEL, id>)xm.objc_msgSend_Raw)(ClassType, GetIntBlockPropStaticSelector);
+                    if (block.value == xm.nil)
+                    {
+                        return null;
+                    }
+
+                    return (IntBlock)MyWrappers.Instance.GetOrCreateObjectForInstance(block.value, CreateObjectFlags.Block);
+                }
+            }
+            set
+            {
+                unsafe
+                {
+                    id block = xm.nil;
+                    if (value != null)
+                    {
+                        block = MyWrappers.Instance.GetOrCreateInstanceForObject(value, CreateInstanceFlags.Block);
+                    }
+
+                    ((delegate* unmanaged[Cdecl]<Class, SEL, id, void>)xm.objc_msgSend_Raw)(ClassType, SetIntBlockPropStaticSelector, block);
+                }
+            }
         }
 
         public TestObjC()
@@ -172,11 +239,33 @@ namespace MyConsoleApp
             : base(instance)
         { }
 
-        public int DoubleInt(int a)
+        public IntBlock IntBlockProp
         {
-            unsafe
+            get
             {
-                return ((delegate* unmanaged[Cdecl]<id, SEL, int, int>)xm.objc_msgSend_Raw)(this.instance, DoubleIntSelector, a);
+                unsafe
+                {
+                    id block = ((delegate* unmanaged[Cdecl]<id, SEL, id>)xm.objc_msgSend_Raw)(this.instance, GetIntBlockPropSelector);
+                    if (block.value == xm.nil)
+                    {
+                        return null;
+                    }
+
+                    return (IntBlock)MyWrappers.Instance.GetOrCreateObjectForInstance(block.value, CreateObjectFlags.Block);
+                }
+            }
+            set
+            {
+                unsafe
+                {
+                    id block = xm.nil;
+                    if (value != null)
+                    {
+                        block = MyWrappers.Instance.GetOrCreateInstanceForObject(value, CreateInstanceFlags.Block);
+                    }
+
+                    ((delegate* unmanaged[Cdecl]<id, SEL, id, void>)xm.objc_msgSend_Raw)(this.instance, SetIntBlockPropSelector, block);
+                }
             }
         }
 
@@ -196,49 +285,11 @@ namespace MyConsoleApp
             }
         }
 
-        public DoubleDoubleBlock GetDoubleDoubleBlock()
+        public void UseProperties()
         {
             unsafe
             {
-                id block = ((delegate* unmanaged[Cdecl]<id, SEL, id>)xm.objc_msgSend_Raw)(this.instance, GetDoubleDoubleBlockSelector);
-                if (block == xm.nil)
-                {
-                    return null;
-                }
-
-                Wrappers.BlockProxy proxy = MyWrappers.Instance.CreateBlockProxy(block.value);
-                return new DoubleDoubleBlock(
-                    (double d) =>
-                    {
-                        double ret = ((delegate* unmanaged[Cdecl]<id, double, double>)proxy.FunctionPointer.ToPointer())(proxy.Block, d);
-                        return ret;
-                    });
-            }
-        }
-
-        public void SetProxy(TestDotNet a)
-        {
-            unsafe
-            {
-                id native;
-                if (a == null)
-                {
-                    native = xm.nil;
-                }
-                else
-                {
-                    native = MyWrappers.Instance.GetOrCreateInstForObject(a, CreateInstFlags.None);
-                }
-
-                ((delegate* unmanaged[Cdecl]<id, SEL, id, void>)xm.objc_msgSend_Raw)(this.instance, SetProxySelector, native);
-            }
-        }
-
-        public double CallDoubleDoubleBlockThroughProxy(double a)
-        {
-            unsafe
-            {
-                return ((delegate* unmanaged[Cdecl]<id, SEL, double, double>)xm.objc_msgSend_Raw)(this.instance, CallDoubleDoubleBlockThroughProxySelector, a);
+                ((delegate* unmanaged[Cdecl]<id, SEL, void>)xm.objc_msgSend_Raw)(this.instance, UsePropertiesSelector);
             }
         }
     }
@@ -246,140 +297,163 @@ namespace MyConsoleApp
     // Implemented dotnet type projected into Objective-C
     class TestDotNet : NSObject
     {
-        private static readonly Class ClassType;
-        private static readonly SEL DoubleIntSelector;
-        private static readonly SEL DoubleFloatSelector;
-        private static readonly SEL DoubleDoubleSelector;
-        private static readonly SEL GetDoubleDoubleBlockSelector;
+        //private static readonly Class ClassType;
 
-        unsafe static TestDotNet()
-        {
-            // Create the class.
-            Class baseClass = Registrar.GetClass(typeof(NSObject));
-            ClassType = xm.objc_allocateClassPair(baseClass, nameof(TestDotNet), 0);
-            Registrar.RegisterClass(
-                typeof(TestDotNet),
-                ClassType,
-                (id inst, CreateObjectFlags flags) => throw new NotImplementedException());
+        //unsafe static TestDotNet()
+        //{
+        //    // Create the class.
+        //    Class baseClass = Registrar.GetClass(typeof(NSObject));
+        //    ClassType = xm.objc_allocateClassPair(baseClass, nameof(TestDotNet), 0);
+        //    Registrar.RegisterClass(
+        //        typeof(TestDotNet),
+        //        ClassType,
+        //        (id inst, CreateObjectFlags flags) => throw new NotImplementedException());
 
-            // Register and define the class's methods.
-            {
-                DoubleIntSelector = xm.sel_registerName("doubleInt:");
-                var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, int, int>)&DoubleIntProxy;
-                xm.class_addMethod(ClassType, DoubleIntSelector, impl, "i@:i");
-            }
+        //    // Register and define the class's methods.
+        //    {
+        //        SEL DoubleIntSelector = xm.sel_registerName("doubleInt:");
+        //        var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, int, int>)&DoubleIntProxy;
+        //        xm.class_addMethod(ClassType, DoubleIntSelector, impl, "i@:i");
+        //    }
 
-            {
-                DoubleFloatSelector = xm.sel_registerName("doubleFloat:");
-                var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, float, float>)&DoubleFloatProxy;
-                xm.class_addMethod(ClassType, DoubleFloatSelector, impl, "f@:f");
-            }
+        //    {
+        //        SEL DoubleFloatSelector = xm.sel_registerName("doubleFloat:");
+        //        var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, float, float>)&DoubleFloatProxy;
+        //        xm.class_addMethod(ClassType, DoubleFloatSelector, impl, "f@:f");
+        //    }
 
-            {
-                DoubleDoubleSelector = xm.sel_registerName("doubleDouble:");
-                var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, double, double>)&DoubleDoubleProxy;
-                xm.class_addMethod(ClassType, DoubleDoubleSelector, impl, "d@:d");
-            }
+        //    {
+        //        SEL DoubleDoubleSelector = xm.sel_registerName("doubleDouble:");
+        //        var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, double, double>)&DoubleDoubleProxy;
+        //        xm.class_addMethod(ClassType, DoubleDoubleSelector, impl, "d@:d");
+        //    }
 
-            {
-                GetDoubleDoubleBlockSelector = xm.sel_registerName("getDoubleDoubleBlock");
-                var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, nint>)&GetDoubleDoubleBlockProxy;
-                xm.class_addMethod(ClassType, GetDoubleDoubleBlockSelector, impl, "?@:");
-            }
+        //    {
+        //        SEL GetDoubleDoubleBlockPropSelector = xm.sel_registerName("doubleDoubleBlockProp");
+        //        var getImpl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, nint>)&GetDoubleDoubleBlockPropProxy;
+        //        xm.class_addMethod(ClassType, GetDoubleDoubleBlockPropSelector, getImpl, "?@:");
 
-            // Override the retain/release methods for memory management.
-            {
-                SEL retainSelector = xm.sel_registerName("retain");
-                SEL releaseSelector = xm.sel_registerName("release");
-                Wrappers.GetRetainReleaseMethods(out IntPtr retainImpl, out IntPtr releaseImpl);
-                xm.class_addMethod(ClassType, retainSelector, new IMP(retainImpl), ":@:");
-                xm.class_addMethod(ClassType, releaseSelector, new IMP(releaseImpl), "v@:");
-            }
+        //        SEL SetDoubleDoubleBlockPropSelector = xm.sel_registerName("setDoubleDoubleBlockProp:");
+        //        var setImpl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, id, void>)&SetDoubleDoubleBlockPropProxy;
+        //        xm.class_addMethod(ClassType, SetDoubleDoubleBlockPropSelector, setImpl, "v@:?");
+        //    }
 
-            // Register the type with the Objective-C runtime.
-            xm.objc_registerClassPair(ClassType);
-        }
+        //    //GetDoubleDoubleBlockPropStaticSelector = xm.sel_registerName("doubleDoubleBlockPropStatic");
+        //    //SetDoubleDoubleBlockPropStaticSelector = xm.sel_registerName("setDoubleDoubleBlockPropStatic:");
 
-        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-        private static int DoubleIntProxy(id self, SEL sel, int a)
-        {
-            unsafe
-            {
-                TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
-                Trace.WriteLine($"DoubleIntProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
-                return managed.DoubleInt(a);
-            }
-        }
+        //    // Override the retain/release methods for memory management.
+        //    {
+        //        SEL retainSelector = xm.sel_registerName("retain");
+        //        SEL releaseSelector = xm.sel_registerName("release");
+        //        Wrappers.GetRetainReleaseMethods(out IntPtr retainImpl, out IntPtr releaseImpl);
+        //        xm.class_addMethod(ClassType, retainSelector, new IMP(retainImpl), ":@:");
+        //        xm.class_addMethod(ClassType, releaseSelector, new IMP(releaseImpl), "v@:");
+        //    }
 
-        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-        private static float DoubleFloatProxy(id self, SEL sel, float a)
-        {
-            unsafe
-            {
-                TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
-                Trace.WriteLine($"DoubleFloatProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
-                return managed.DoubleFloat(a);
-            }
-        }
+        //    // Register the type with the Objective-C runtime.
+        //    xm.objc_registerClassPair(ClassType);
+        //}
 
-        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-        private static double DoubleDoubleProxy(id self, SEL sel, double a)
-        {
-            unsafe
-            {
-                TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
-                Trace.WriteLine($"DoubleDoubleProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
-                return managed.DoubleDouble(a);
-            }
-        }
+        //[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        //private static int DoubleIntProxy(id self, SEL sel, int a)
+        //{
+        //    unsafe
+        //    {
+        //        TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
+        //        Trace.WriteLine($"DoubleIntProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
+        //        return managed.DoubleInt(a);
+        //    }
+        //}
 
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        private delegate double DoubleDoubleBlockProxy(id blk, double a);
+        //[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        //private static float DoubleFloatProxy(id self, SEL sel, float a)
+        //{
+        //    unsafe
+        //    {
+        //        TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
+        //        Trace.WriteLine($"DoubleFloatProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
+        //        return managed.DoubleFloat(a);
+        //    }
+        //}
 
-        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-        // Should be returning `id` but can't because of non-primitive return.
-        // See https://github.com/dotnet/runtime/issues/35928
-        private static nint GetDoubleDoubleBlockProxy(id self, SEL sel)
-        {
-            unsafe
-            {
-                TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
-                Trace.WriteLine($"GetDoubleDoubleBlockProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
+        //[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        //private static double DoubleDoubleProxy(id self, SEL sel, double a)
+        //{
+        //    unsafe
+        //    {
+        //        TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
+        //        Trace.WriteLine($"DoubleDoubleProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
+        //        return managed.DoubleDouble(a);
+        //    }
+        //}
 
-                DoubleDoubleBlock block = managed.GetDoubleDoubleBlock();
-                DoubleDoubleBlockProxy proxy = (id blk, double a) =>
-                {
-                    Trace.WriteLine($"DoubleDoubleBlockProxy: id: {blk} a: {a}");
-                    return block(a);
-                };
+        //[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        //private delegate double DoubleDoubleBlockProxy(id blk, double a);
 
-                IntPtr fptr = Marshal.GetFunctionPointerForDelegate(proxy);
-                return MyWrappers.Instance.CreateBlock(proxy, fptr, "d?d");
-            }
-        }
+        //[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        //// Should be returning `id` but can't because of non-primitive return.
+        //// See https://github.com/dotnet/runtime/issues/35928
+        //private static nint GetDoubleDoubleBlockPropProxy(id self, SEL sel)
+        //{
+        //    unsafe
+        //    {
+        //        TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
+        //        Trace.WriteLine($"GetDoubleDoubleBlockPropProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
 
-        public TestDotNet()
-        { }
+        //        DoubleDoubleBlock block = managed.DoubleDoubleBlockProp;
+        //        DoubleDoubleBlockProxy proxy = (id blk, double a) =>
+        //        {
+        //            Trace.WriteLine($"DoubleDoubleBlockProxy: id: {blk} a: {a}");
+        //            return block(a);
+        //        };
 
-        public int DoubleInt(int a)
-        {
-            return a * 2;
-        }
+        //        IntPtr fptr = Marshal.GetFunctionPointerForDelegate(proxy);
+        //        return MyWrappers.Instance.CreateBlock(proxy, fptr, "d?d");
+        //    }
+        //}
 
-        public float DoubleFloat(float a)
-        {
-            return a * 2;
-        }
+        //[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        //private static void SetDoubleDoubleBlockPropProxy(id self, SEL sel, id blk)
+        //{
+        //    unsafe
+        //    {
+        //        TestDotNet managed = Wrappers.IdDispatch.GetInstance<TestDotNet>((Wrappers.IdDispatch*)self.value);
+        //        Trace.WriteLine($"GetDoubleDoubleBlockPropProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
 
-        public double DoubleDouble(double a)
-        {
-            return a * 2;
-        }
+        //        //managed.DoubleDoubleBlockProp
+        //        throw new NotImplementedException();
+        //    }
+        //}
 
-        public DoubleDoubleBlock GetDoubleDoubleBlock()
-        {
-            return (a) => this.DoubleDouble(a);
-        }
+        //public static DoubleDoubleBlock DoubleDoubleBlockPropStatic
+        //{
+        //    get;
+        //    set;
+        //}
+
+        //public TestDotNet()
+        //{ }
+
+        //public DoubleDoubleBlock DoubleDoubleBlockProp
+        //{
+        //    get;
+        //    set;
+        //}
+
+        //public int DoubleInt(int a)
+        //{
+        //    return a * 2;
+        //}
+
+        //public float DoubleFloat(float a)
+        //{
+        //    return a * 2;
+        //}
+
+        //public double DoubleDouble(double a)
+        //{
+        //    return a * 2;
+        //}
     }
 
     unsafe class Program
@@ -395,26 +469,25 @@ namespace MyConsoleApp
             });
 
             var testObjC = new TestObjC();
-            Console.WriteLine($"DoubleInt: {testObjC.DoubleInt((int)Math.PI)}");
+
+            // Call Objective-C methods
             Console.WriteLine($"DoubleFloat: {testObjC.DoubleFloat((float)Math.PI)}");
             Console.WriteLine($"DoubleDouble: {testObjC.DoubleDouble(Math.PI)}");
 
-            // Get delegate early
-            var doubleDoubleDel = testObjC.GetDoubleDoubleBlock();
+            // Roundtrip Delegate <=> Block
+            testObjC.IntBlockProp = (int a) => { return a * 2; };
+            Console.WriteLine($"IntBlockProp: {testObjC.IntBlockProp((int)Math.PI)}");
 
-            var testDotNet = new TestDotNet();
-            testObjC.SetProxy(testDotNet);
-            Console.WriteLine($"Proxied-DoubleInt: {testObjC.DoubleInt((int)Math.PI)}");
-            Console.WriteLine($"Proxied-DoubleFloat: {testObjC.DoubleFloat((float)Math.PI)}");
-            Console.WriteLine($"Proxied-DoubleDouble: {testObjC.DoubleDouble(Math.PI)}");
-            Console.WriteLine($"Proxied-DoubleDouble Block: {testObjC.CallDoubleDoubleBlockThroughProxy(Math.PI)}");
+            // Roundtrip Delegate <=> Block (static)
+            TestObjC.IntBlockPropStatic = (int a) => { return a * 3; };
+            Console.WriteLine($"IntBlockPropStatic: {TestObjC.IntBlockPropStatic((int)Math.PI)}");
 
-            testObjC.SetProxy(null);
-            Console.WriteLine($"DoubleInt: {testObjC.DoubleInt((int)Math.PI)}");
-            Console.WriteLine($"DoubleFloat: {testObjC.DoubleFloat((float)Math.PI)}");
-            Console.WriteLine($"DoubleDouble: {testObjC.DoubleDouble(Math.PI)}");
+            // Use delegates in Objective-C
+            testObjC.UseProperties();
 
-            Console.WriteLine($"DoubleDouble Block: {doubleDoubleDel(Math.PI)}");
+            // Clean up
+            testObjC.IntBlockProp = null;
+            TestObjC.IntBlockPropStatic = null;
         }
     }
 }

@@ -91,6 +91,14 @@ namespace ObjCRuntime
         [DllImport(nameof(xm))]
         private extern static void* Get_clr_release();
 
+        [DllImport(nameof(xm))]
+        public extern static void clr_SetGlobalMessageSendCallbacks(
+            IntPtr objc_msgSend,
+            IntPtr objc_msgSend_fpret,
+            IntPtr objc_msgSend_stret,
+            IntPtr objc_msgSendSuper,
+            IntPtr objc_msgSendSuper_stret);
+
         public static readonly void* objc_msgSend_Raw = Get_objc_msgSend();
 
         [DllImport(nameof(xm))]

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include <objc/objc.h>
 #include <objc/runtime.h>
@@ -64,35 +65,60 @@ static const char* clr_strdup(const char* str)
 
 void Initialize()
 {
+    //printf("long int: (%zd) bytes\n", sizeof(long int));
+}
+
+enum type_t
+{
+    type_now = 1, // Native object
+    type_mow = 2, // Managed object
+};
+
+static void cleanup_callback(enum type_t type, void* value)
+{
+    printf("cleanup_callback: %d - 0x%zx\n", type, (size_t)value);
+}
+
+
+static void* store_default(enum type_t type, void* value)
+{
+    printf("store_default: %d - 0x%zx\n", type, (size_t)value);
+    return NULL;
+}
+
+typedef void* (*store_value_t)(enum type_t type, void* value);
+static store_value_t g_store = &store_default;
+
+void* runtime_handshake(store_value_t st)
+{
+    g_store = st;
+    return &cleanup_callback;
 }
 
 void dummy(void* ptr)
 {
-    //debug_inst(ptr);
-    printf("Inside xm\n");
+    debug_inst(ptr);
 }
 
 typedef struct
 {
     size_t gcHandle;
-    size_t refCount;
+    atomic_size_t refCount;
 } ManagedObjectWrapperLifetime;
 
 static id clr_retain(id self, SEL sel)
 {
     ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
-    lifetime->refCount++;
+    atomic_fetch_add(&lifetime->refCount, 1);
     return self;
 }
 
 static void clr_release(id self, SEL sel)
 {
     ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
-    lifetime->refCount--;
+    (void)atomic_fetch_sub(&lifetime->refCount, 1);
     if (!lifetime->refCount)
-    {
         printf("Destroyed: %p\n", (void*)self);
-    }
 }
 
 void* Get_clr_retain()
@@ -103,6 +129,16 @@ void* Get_clr_retain()
 void* Get_clr_release()
 {
     return (void*)&clr_release;
+}
+
+void clr_SetGlobalMessageSendCallbacks(
+    void* fptr_objc_msgSend,
+    void* fptr_objc_msgSend_fpret,
+    void* fptr_objc_msgSend_stret,
+    void* fptr_objc_msgSendSuper,
+    void* fptr_objc_msgSendSuper_stret)
+{
+    // Provided overrides to send to CLR.
 }
 
 void* Get_objc_msgSend()
@@ -174,7 +210,7 @@ const char* class_getName_proxy(Class cls)
 void objc_destructInstance_proxy(id obj)
 {
     void* addr = objc_destructInstance(obj);
-    assert(addr == obj);
+    assert(addr == (void*)obj);
     (void)addr;
 }
 

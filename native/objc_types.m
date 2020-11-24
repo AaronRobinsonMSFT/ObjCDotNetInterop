@@ -1,80 +1,81 @@
 
 #import <Foundation/Foundation.h>
 
-typedef double (^doubleDoubleBlock)(double);
+typedef int (^intBlock)(int);
 
-@interface TestDotNet : NSObject
-- (int)doubleInt: (int)a;
+@interface TestDotNet : NSObject {
+}
+
+@property (copy) intBlock intBlockProp;
+
+- (float)doubleFloat: (float)a;
+- (double)doubleDouble: (double)a;
+@end
+
+@interface TestObjC : NSObject {
+}
+
+@property (copy, class) intBlock intBlockPropStatic;
+@property (copy) intBlock intBlockProp;
+
 - (float)doubleFloat: (float)a;
 - (double)doubleDouble: (double)a;
 
-- (doubleDoubleBlock)getDoubleDoubleBlock;
+- (void)useProperties;
 @end
 
-@interface TestObjC : NSObject
-- (int)doubleInt: (int)a;
-- (float)doubleFloat: (float)a;
-- (double)doubleDouble: (double)a;
-
-- (doubleDoubleBlock)getDoubleDoubleBlock;
-
-- (void)setProxy: (TestDotNet*) proxy;
-- (double)callDoubleDoubleBlockThroughProxy:(double) a;
-@end
+void dummy(id i);
 
 @implementation TestObjC
-TestDotNet* _proxy;
-doubleDoubleBlock _block;
 
-- (int)doubleInt: (int) a
-{
-    NSLog(@"doubleInt: %i", a);
-    if (_proxy != nil)
-    {
-        return [_proxy doubleInt: a];
-    }
-    return a * 2;
+static intBlock _intBlockPropStatic;
++ (intBlock)intBlockPropStatic {
+    return _intBlockPropStatic;
 }
-- (float)doubleFloat: (float)a
-{
-    NSLog(@"doubleFloat: %f", a);
-    if (_proxy != nil)
-    {
-        return [_proxy doubleFloat: a];
++ (void)setIntBlockPropStatic:(intBlock) blk {
+    if (_intBlockPropStatic != blk) {
+        [_intBlockPropStatic release];
+        _intBlockPropStatic = [blk copy];
     }
+}
+
+intBlock _intBlockProp;
+- (intBlock)intBlockProp {
+    return _intBlockProp;
+}
+- (void)setIntBlockProp:(intBlock) blk {
+    if (_intBlockProp != blk) {
+        [_intBlockProp release];
+        _intBlockProp = [blk copy];
+    }
+}
+
+TestDotNet* _proxy;
+
+- (float)doubleFloat: (float)a {
+    //NSLog(@"doubleFloat: %f", a);
     return a * 2.;
 }
 - (double)doubleDouble: (double)a
 {
-    NSLog(@"doubleDouble: %lf", a);
-    if (_proxy != nil)
-    {
-        return [_proxy doubleDouble: a];
-    }
+    //NSLog(@"doubleDouble: %lf", a);
     return a * 2.;
 }
-- (doubleDoubleBlock)getDoubleDoubleBlock
-{
-    doubleDoubleBlock blk = ^(double a) { return [self doubleDouble: a]; };
-    return [blk copy];
-}
-- (void)setProxy: (TestDotNet*) proxy
-{
-    if (_proxy != nil)
-    {
-        [_proxy release];
-    }
-    _proxy = proxy;
-}
-- (double)callDoubleDoubleBlockThroughProxy:(double) a
-{
-    if (_proxy == nil)
-    {
-        NSLog(@"Proxy not set");
-        return -1;
-    }
+- (void)useProperties {
+    int a = 13;
+    int b;
+    intBlock blk;
 
-    doubleDoubleBlock blk = [_proxy getDoubleDoubleBlock];
-    return blk(a);
+    blk = self.intBlockProp;
+    b = blk(13);
+    printf("Calling intBlockProp(%d) = %d\n", a, b);
+
+    //dummy(blk);
+
+    blk = TestObjC.intBlockPropStatic;
+    b = blk(13);
+    printf("Calling intBlockPropStatic(%d) = %d\n", a, b);
+
+    //dummy(blk);
 }
 @end

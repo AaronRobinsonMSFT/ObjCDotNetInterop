@@ -8,14 +8,18 @@ using ObjCRuntime;
 
 namespace System.Runtime.InteropServices.ObjectiveC
 {
-    public enum CreateInstFlags
+    [Flags]
+    public enum CreateInstanceFlags
     {
-        None
+        None,
+        Block,
     }
 
+    [Flags]
     public enum CreateObjectFlags
     {
-        None
+        None,
+        Block,
     }
 
     /// <summary>
@@ -27,16 +31,29 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// Register the current wrappers instance as the global one for the system.
         /// </summary>
         /// <remarks>
-        /// This primarily enables support for <see cref="StartThreadPoolWorkItem"/>
-        /// and <see cref="EndThreadPoolWorkItem"/>.
+        /// Registering as the global instance will call this implementation's
+        /// <see cref="GetMessageSendCallbacks(out IntPtr, out IntPtr, out IntPtr, out IntPtr, out IntPtr)"/> and
+        /// pass the pointers to the runtime to override the global settings.
         /// </remarks>
         public void RegisterAsGlobal()
         {
-            throw new NotImplementedException();
+            this.GetMessageSendCallbacks(
+                out IntPtr objc_msgSend,
+                out IntPtr objc_msgSend_fpret,
+                out IntPtr objc_msgSend_stret,
+                out IntPtr objc_msgSendSuper,
+                out IntPtr objc_msgSendSuper_stret);
+
+            xm.clr_SetGlobalMessageSendCallbacks(
+                objc_msgSend,
+                objc_msgSend_fpret,
+                objc_msgSend_stret,
+                objc_msgSendSuper,
+                objc_msgSendSuper_stret);
         }
 
         /// <summary>
-        /// Type when entering the managed environment from an Objective-C wrapper.
+        /// Type when entering the managed environment from an Objective-C instance.
         /// </summary>
         public struct IdDispatch
         {
@@ -56,13 +73,27 @@ namespace System.Runtime.InteropServices.ObjectiveC
         }
 
         /// <summary>
+        /// Type when entering the managed environment from an Objective-C block.
+        /// </summary>
+        public struct BlockDispatch
+        {
+            public IntPtr Isa;
+            public unsafe static T GetInstance<T>(BlockDispatch* dispatchPtr) where T : class
+            {
+                var block = (BlockLiteral*)dispatchPtr;
+                var gcHandle = GCHandle.FromIntPtr(block->DelegateGCHandle);
+                return (T)gcHandle.Target;
+            }
+        }
+
+        /// <summary>
         /// Get or create a Objective-C wrapper for the supplied managed object.
         /// </summary>
         /// <param name="instance">A managed object to wrap</param>
         /// <param name="flags">Flags for creation</param>
         /// <returns>An Objective-C wrapper</returns>
-        /// <see cref="ComputeInstClass(object, CreateInstFlags)"/>
-        public IntPtr GetOrCreateInstForObject(object instance, CreateInstFlags flags)
+        /// <see cref="ComputeInstanceClass(object, CreateInstanceFlags)"/>
+        public IntPtr GetOrCreateInstanceForObject(object instance, CreateInstanceFlags flags)
         {
             id native;
             if (Internals.TryGetIdentity(instance, out native))
@@ -70,18 +101,30 @@ namespace System.Runtime.InteropServices.ObjectiveC
                 return native.value;
             }
 
-            IntPtr klass = this.ComputeInstClass(instance, flags);
-
-            unsafe
+            if (flags.HasFlag(CreateInstanceFlags.Block))
             {
-                // Add a lifetime size for the GC Handle.
-                native = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime));
+                Debug.Assert(instance is Delegate);
 
-                var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(native);
-                IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
-                Trace.WriteLine($"Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
-                lifetime->GCHandle = gcptr;
-                lifetime->RefCount = 1;
+                var asDelegate = (Delegate)instance;
+                string signature;
+                var invoker = this.GetBlockInvokeAndSignature(asDelegate, flags, out signature);
+                native = this.CreateBlock(asDelegate, invoker, signature);
+            }
+            else
+            {
+                unsafe
+                {
+                    IntPtr klass = this.ComputeInstanceClass(instance, flags);
+
+                    // Add a lifetime size for the GC Handle.
+                    native = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime));
+
+                    var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(native);
+                    IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
+                    Trace.WriteLine($"Object: Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
+                    lifetime->GCHandle = gcptr;
+                    lifetime->RefCount = 1;
+                }
             }
 
             Internals.RegisterIdentity(instance, native);
@@ -89,7 +132,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         }
 
         /// <summary>
-        /// Called if there is currently no existing Objective-C wrapper.
+        /// Called if there is currently no existing Objective-C wrapper for an object.
         /// </summary>
         /// <param name="instance">A managed object to wrap</param>
         /// <param name="flags">Flags for creation</param>
@@ -98,7 +141,20 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// Defer to the implementer for determining the <see cref="https://developer.apple.com/documentation/objectivec/class">Objective-C Class</see>
         /// that should be used to wrap the managed object.
         /// </remarks>
-        protected abstract IntPtr ComputeInstClass(object instance, CreateInstFlags flags);
+        protected abstract IntPtr ComputeInstanceClass(object instance, CreateInstanceFlags flags);
+
+        /// <summary>
+        /// Called if there is currently no existing Objective-C wrapper for a Delegate.
+        /// </summary>
+        /// <param name="del">Delegate for block</param>
+        /// <param name="flags">Flags for creation</param>
+        /// <param name="signature">Type Encoding for returned block</param>
+        /// <returns>A callable delegate to the Objective-C runtime</returns>
+        /// <remarks>
+        /// Defer to the implementer for determining the <see cref="https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html#//apple_ref/doc/uid/TP40008048-CH100">Block signature</see>
+        /// that should be used to project the managed Delegate.
+        /// </remarks>
+        protected abstract IntPtr GetBlockInvokeAndSignature(Delegate del, CreateInstanceFlags flags, out string signature);
 
         /// <summary>
         /// Get or create a managed wrapper for the supplied Objective-C object.
@@ -106,8 +162,8 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <param name="instance">An Objective-C object</param>
         /// <param name="flags">Flags for creation</param>
         /// <returns>A managed wrapper</returns>
-        /// <see cref="CreateInst(object, CreateInstFlags)"/>
-        public object GetOrCreateObjectForInst(IntPtr instance, CreateObjectFlags flags)
+        /// <see cref="CreateObject(IntPtr, CreateObjectFlags)"/>
+        public object GetOrCreateObjectForInstance(IntPtr instance, CreateObjectFlags flags)
         {
             object wrapper;
             if (!Internals.TryGetObject(instance, out wrapper))
@@ -134,7 +190,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <param name="flags">Flags for creation</param>
         /// <param name="wrapperMaybe">The managed wrapper to use if one doesn't exist</param>
         /// <returns>A managed wrapper</returns>
-        public object GetOrRegisterObjectForInst(IntPtr instance, CreateObjectFlags flags, object wrapperMaybe)
+        public object GetOrRegisterObjectForInstance(IntPtr instance, CreateObjectFlags flags, object wrapperMaybe)
         {
             object wrapper;
             if (!Internals.TryGetObject(instance, out wrapper))
@@ -176,19 +232,26 @@ namespace System.Runtime.InteropServices.ObjectiveC
         [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
         private unsafe static void CopyBlock(void* dst, void* src)
         {
+            Trace.WriteLine($"CopyBlock: dst: {(long)dst:x} src: {(long)src:x}");
+
             var blockSrc = (BlockLiteral*)src;
             var blockDescSrc = (DelegateBlockDesc*)blockSrc->BlockDescriptor;
             var blockDst = (BlockLiteral*)dst;
 
-            uint count = Interlocked.Decrement(ref blockDescSrc->RefCount);
+            uint count = Interlocked.Increment(ref blockDescSrc->RefCount);
             Debug.Assert(count > 1);
             blockDst->BlockDescriptor = blockDescSrc;
             blockDst->DelegateGCHandle = blockSrc->DelegateGCHandle;
+
+            object del = GCHandle.FromIntPtr(blockSrc->DelegateGCHandle).Target;
+            Internals.RegisterIdentity(del, (nint)dst);
         }
 
         [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
         private unsafe static void DisposeBlock(void* blk)
         {
+            Trace.WriteLine($"DisposeBlock: blk: {(long)blk:x}");
+
             var block = (BlockLiteral*)blk;
             var blockDesc = (DelegateBlockDesc*)block->BlockDescriptor;
 
@@ -196,6 +259,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
             GCHandle.FromIntPtr(block->DelegateGCHandle).Free();
 
             uint count = Interlocked.Decrement(ref blockDesc->RefCount);
+            Debug.Assert(blockDesc->RefCount != uint.MaxValue);
             if (count != 0)
             {
                 return;
@@ -211,7 +275,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// to the Objective-C environment.
         /// </summary>
         /// <param name="delegateInstance">The delegate to wrap</param>
-        /// <param name="delegateFunctionPointer">The function pointer to call</param>
+        /// <param name="invoker">Function to invoke during dispatch</param>
         /// <param name="signature">The Objective-C type signature of the function</param>
         /// <returns>An Objective-C block</returns>
         /// <remarks>
@@ -219,13 +283,14 @@ namespace System.Runtime.InteropServices.ObjectiveC
         ///
         /// See <see href="http://clang.llvm.org/docs/Block-ABI-Apple.html">Objective-C Block ABI</see> for the supported contract.
         /// </remarks>
-        public IntPtr CreateBlock(Delegate delegateInstance, IntPtr delegateFunctionPointer, string signature)
+        private IntPtr CreateBlock(Delegate delegateInstance, IntPtr invoker, string signature)
         {
             var delegateHandle = GCHandle.Alloc(delegateInstance);
 
             unsafe
             {
                 var desc = (DelegateBlockDesc*)Marshal.AllocCoTaskMem(sizeof(DelegateBlockDesc));
+                desc->Reserved = 0;
                 desc->Size = sizeof(BlockLiteral);
                 desc->Copy_helper = &CopyBlock;
                 desc->Dispose_helper = &DisposeBlock;
@@ -235,7 +300,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
                 var block = (BlockLiteral*)Marshal.AllocCoTaskMem(sizeof(BlockLiteral));
                 block->Isa = xm._NSConcreteStackBlock_Raw;
                 block->Flags = (1 << 25) | (1 << 30); // Descriptor contains copy/dispose and signature.
-                block->Invoke = delegateFunctionPointer.ToPointer();
+                block->Invoke = invoker.ToPointer();
                 block->BlockDescriptor = desc;
                 block->DelegateGCHandle = GCHandle.ToIntPtr(delegateHandle);
 
@@ -246,7 +311,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <summary>
         /// Type used to represent the dispatching function and associated context.
         /// </summary>
-        public record BlockProxy
+        public sealed class BlockProxy : IDisposable
         {
             /// <summary>
             /// Block instance.
@@ -266,9 +331,29 @@ namespace System.Runtime.InteropServices.ObjectiveC
             /// </remarks>
             public IntPtr FunctionPointer { get; init; }
 
+            /// <inheritdoc />
+            public void Dispose()
+            {
+                this.Dispose(true);
+                GC.SuppressFinalize(this);
+            }
+
+            private bool isDisposed = false;
+
             ~BlockProxy()
             {
+                this.Dispose(false);
+            }
+
+            private void Dispose(bool disposing)
+            {
+                if (this.isDisposed)
+                {
+                    return;
+                }
+
                 xm.Block_release(this.Block);
+                this.isDisposed = true;
             }
         }
 
@@ -280,7 +365,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <remarks>
         /// See <see href="http://clang.llvm.org/docs/Block-ABI-Apple.html">Objective-C Block ABI</see> for the supported contract.
         /// </remarks>
-        public BlockProxy CreateBlockProxy(IntPtr block)
+        protected BlockProxy CreateBlockProxy(IntPtr block)
         {
             // Ownership has been transferred at this point (i.e. someone else has called [block copy]).
             unsafe
@@ -298,28 +383,22 @@ namespace System.Runtime.InteropServices.ObjectiveC
         }
 
         /// <summary>
-        /// Allows the implementer of the Objective-C wrapper class
-        /// to provide overrides to the 'objc_msgSend*' APIs for the
-        /// Objective-C runtime.
+        /// Get function pointers for Objective-C runtime message passing.
         /// </summary>
-        /// <param name="objc_msgSend"></param>
-        /// <param name="objc_msgSend_fpret"></param>
-        /// <param name="objc_msgSend_stret"></param>
-        /// <param name="objc_msgSendSuper"></param>
-        /// <param name="objc_msgSendSuper_stret"></param>
         /// <remarks>
         /// Providing these overrides can enable support for Objective-C
-        /// exception propagation as well as variadic argument support.
+        /// exception propagation and variadic argument support.
+        /// 
+        /// Allows the implementer of the global Objective-C wrapper class
+        /// to provide overrides to the 'objc_msgSend*' APIs for the
+        /// Objective-C runtime.
         /// </remarks>
-        protected void SetMessageSendCallbacks(
-            IntPtr objc_msgSend,
-            IntPtr objc_msgSend_fpret,
-            IntPtr objc_msgSend_stret,
-            IntPtr objc_msgSendSuper,
-            IntPtr objc_msgSendSuper_stret)
-        {
-            throw new NotImplementedException();
-        }
+        public abstract void GetMessageSendCallbacks(
+            out IntPtr objc_msgSend,
+            out IntPtr objc_msgSend_fpret,
+            out IntPtr objc_msgSend_stret,
+            out IntPtr objc_msgSendSuper,
+            out IntPtr objc_msgSendSuper_stret);
 
         /// <summary>
         /// Get the retain and release implementations that should be added
@@ -344,27 +423,24 @@ namespace System.Runtime.InteropServices.ObjectiveC
         }
 
         /// <summary>
-        /// Provides a start callout for the ThreadPool API when a new
-        /// work item is to be schedule.
+        /// Provides a way to indicate to the runtime that the .NET ThreadPool should
+        /// add a NSAutoreleasePool to a thread and handle draining.
         /// </summary>
         /// <remarks>
-        /// Addresses https://github.com/dotnet/runtime/issues/44213
+        /// Work items executed on threadpool worker threads are wrapped with an NSAutoreleasePool
+        /// that drains when the work item completes.
+        /// See https://developer.apple.com/documentation/foundation/nsautoreleasepool
         /// </remarks>
-        protected abstract void StartThreadPoolWorkItem();
-
-        /// <summary>
-        /// Provides an end callout for the ThreadPool API when a
-        /// work item is completed.
-        /// </summary>
-        /// <remarks>
         /// Addresses https://github.com/dotnet/runtime/issues/44213
-        /// </remarks>
-        protected abstract void EndThreadPoolWorkItem();
+        public static void EnableAutoReleasePoolsForThreadPool()
+        {
+            throw new NotImplementedException();
+        }
 
         private static class Internals
         {
             private static readonly ReaderWriterLockSlim RegisteredIdentityLock = new ReaderWriterLockSlim();
-            private static readonly Dictionary<object, id> ObjectToIdentity = new Dictionary<object, id>();
+            private static readonly Dictionary<object, List<id>> ObjectToIdentity = new Dictionary<object, List<id>>();
             private static readonly Dictionary<id, object> IdentityToObject = new Dictionary<id, object>();
             public static void RegisterIdentity(object managed, id native)
             {
@@ -372,7 +448,14 @@ namespace System.Runtime.InteropServices.ObjectiveC
 
                 try
                 {
-                    ObjectToIdentity.Add(managed, native);
+                    List<id> ids;
+                    if (!ObjectToIdentity.TryGetValue(managed, out ids))
+                    {
+                        ids = new List<id>();
+                        ObjectToIdentity.Add(managed, ids);
+                    }
+
+                    ids.Add(native);
                     IdentityToObject.Add(native, managed);
                 }
                 finally
@@ -386,7 +469,15 @@ namespace System.Runtime.InteropServices.ObjectiveC
 
                 try
                 {
-                    return ObjectToIdentity.TryGetValue(managed, out native);
+                    List<id> ids;
+                    if (!ObjectToIdentity.TryGetValue(managed, out ids))
+                    {
+                        native = xm.nil;
+                        return false;
+                    }
+
+                    native = ids[0];
+                    return true;
                 }
                 finally
                 {
