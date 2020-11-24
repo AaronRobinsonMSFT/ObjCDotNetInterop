@@ -2,7 +2,12 @@
 
   <PropertyGroup>
     <NativeRoot>$(MSBuildThisFileDirectory)native/</NativeRoot>
+    <EnableARC>false</EnableARC>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Clean Include="$(OutputPath)libxm.dylib" />
+  </ItemGroup>
 
   <Target
     Name="BuildObjectiveCCoreCLR"
@@ -10,7 +15,13 @@
     Inputs="$(NativeRoot)xm.c;$(NativeRoot)objc_types.m"
     Outputs="$(OutputPath)libxm.dylib">
 
-    <Exec Command="clang -std=c99 -Wall -Wno-unused-function -framework Foundation -g -fpic -shared -lobjc -ObjC -o &quot;$(OutputPath)libxm.dylib&quot; $(NativeRoot)objc_types.m $(NativeRoot)xm.c" />
+    <PropertyGroup>
+      <ObjCCompilerArgs>-lobjc -ObjC</ObjCCompilerArgs>
+      <ObjCCompilerArgs Condition="'$(EnableARC)' == 'true'">$(ObjCCompilerArgs) -fobjc-arc</ObjCCompilerArgs>
+      <ObjCCompilerArgs Condition="'$(EnableARC)' == 'false'">$(ObjCCompilerArgs) -fno-objc-arc</ObjCCompilerArgs>
+    </PropertyGroup>
+
+    <Exec Command="clang -std=c99 -Wall -Wno-unused-function -framework Foundation -g -fpic -shared $(ObjCCompilerArgs) -o &quot;$(OutputPath)libxm.dylib&quot; $(NativeRoot)objc_types.m $(NativeRoot)xm.c" />
   </Target>
 
 </Project>
