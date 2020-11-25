@@ -20,19 +20,17 @@ namespace MyConsoleApp
             => Registrar.GetClass(instance.GetType()).value;
 
         [UnmanagedCallersOnly]
-        private unsafe static int ABI_IntBlock(BlockDispatch* b, int a)
-        {
-            return BlockDispatch.GetInstance<IntBlock>(b)(a);
-        }
+        private unsafe static int ABI_IntBlock(BlockLiteral* b, int a)
+            => BlockLiteral.GetDelegate<IntBlock>(b)(a);
 
-        protected override IntPtr GetBlockInvokeAndSignature(Delegate del, CreateInstanceFlags flags, out string signature)
+        protected override IntPtr GetBlockInvokeAndSignature(Delegate del, CreateBlockFlags flags, out string signature)
         {
             if (del is IntBlock)
             {
                 signature = "i?i";
                 unsafe
                 {
-                    return (IntPtr)(delegate* unmanaged<BlockDispatch*, int, int>)&ABI_IntBlock;
+                    return (IntPtr)(delegate* unmanaged<BlockLiteral*, int, int>)&ABI_IntBlock;
                 }
             }
 
@@ -42,7 +40,6 @@ namespace MyConsoleApp
         protected override object CreateObject(IntPtr instance, CreateObjectFlags flags)
         {
             string className = xm.object_getClassName(instance);
-
             var factory = Registrar.GetFactory(className);
             return factory(instance, flags);
         }
@@ -167,7 +164,7 @@ namespace MyConsoleApp
         /// </summary>
         /// <param name="klass"></param>
         protected NSObject(Class klass)
-            : this(xm.class_createInstance(klass, 0))
+            : this(xm.class_createInstance(klass, extraBytes: 0))
         {
         }
     }
@@ -207,26 +204,33 @@ namespace MyConsoleApp
             {
                 unsafe
                 {
-                    id block = ((delegate* unmanaged[Cdecl]<Class, SEL, id>)xm.objc_msgSend_Raw)(ClassType, GetIntBlockPropStaticSelector);
+                    id block = ((delegate* unmanaged<Class, SEL, id>)xm.objc_msgSend_Raw)(ClassType, GetIntBlockPropStaticSelector);
                     if (block.value == xm.nil)
                     {
                         return null;
                     }
 
-                    return (IntBlock)MyWrappers.Instance.GetOrCreateObjectForInstance(block.value, CreateObjectFlags.Block);
+                    return (IntBlock)MyWrappers.Instance.GetOrCreateObjectForInstance(block.value, CreateObjectFlags.Block | CreateObjectFlags.Unwrap);
                 }
             }
             set
             {
                 unsafe
                 {
-                    id block = xm.nil;
+                    BlockLiteral block;
+                    BlockLiteral* blockRaw = null;
                     if (value != null)
                     {
-                        block = MyWrappers.Instance.GetOrCreateInstanceForObject(value, CreateInstanceFlags.Block);
+                        block = MyWrappers.Instance.GetOrCreateBlockForDelegate(value, CreateBlockFlags.None);
+                        blockRaw = &block;
                     }
 
-                    ((delegate* unmanaged[Cdecl]<Class, SEL, id, void>)xm.objc_msgSend_Raw)(ClassType, SetIntBlockPropStaticSelector, block);
+                    ((delegate* unmanaged<Class, SEL, BlockLiteral*, void>)xm.objc_msgSend_Raw)(ClassType, SetIntBlockPropStaticSelector, blockRaw);
+
+                    if (blockRaw != null)
+                    {
+                        MyWrappers.Instance.ReleaseBlockLiteral(ref *blockRaw);
+                    }
                 }
             }
         }
@@ -245,26 +249,33 @@ namespace MyConsoleApp
             {
                 unsafe
                 {
-                    id block = ((delegate* unmanaged[Cdecl]<id, SEL, id>)xm.objc_msgSend_Raw)(this.instance, GetIntBlockPropSelector);
+                    id block = ((delegate* unmanaged<id, SEL, id>)xm.objc_msgSend_Raw)(this.instance, GetIntBlockPropSelector);
                     if (block.value == xm.nil)
                     {
                         return null;
                     }
 
-                    return (IntBlock)MyWrappers.Instance.GetOrCreateObjectForInstance(block.value, CreateObjectFlags.Block);
+                    return (IntBlock)MyWrappers.Instance.GetOrCreateObjectForInstance(block.value, CreateObjectFlags.Block | CreateObjectFlags.Unwrap);
                 }
             }
             set
             {
                 unsafe
                 {
-                    id block = xm.nil;
+                    BlockLiteral block;
+                    BlockLiteral* blockRaw = null;
                     if (value != null)
                     {
-                        block = MyWrappers.Instance.GetOrCreateInstanceForObject(value, CreateInstanceFlags.Block);
+                        block = MyWrappers.Instance.GetOrCreateBlockForDelegate(value, CreateBlockFlags.None);
+                        blockRaw = &block;
                     }
 
-                    ((delegate* unmanaged[Cdecl]<id, SEL, id, void>)xm.objc_msgSend_Raw)(this.instance, SetIntBlockPropSelector, block);
+                    ((delegate* unmanaged<id, SEL, BlockLiteral*, void>)xm.objc_msgSend_Raw)(this.instance, SetIntBlockPropSelector, blockRaw);
+
+                    if (blockRaw != null)
+                    {
+                        MyWrappers.Instance.ReleaseBlockLiteral(ref *blockRaw);
+                    }
                 }
             }
         }
@@ -273,7 +284,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                return ((delegate* unmanaged[Cdecl]<id, SEL, float, float>)xm.objc_msgSend_Raw)(this.instance, DoubleFloatSelector, a);
+                return ((delegate* unmanaged<id, SEL, float, float>)xm.objc_msgSend_Raw)(this.instance, DoubleFloatSelector, a);
             }
         }
 
@@ -281,7 +292,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                return ((delegate* unmanaged[Cdecl]<id, SEL, double, double>)xm.objc_msgSend_Raw)(this.instance, DoubleDoubleSelector, a);
+                return ((delegate* unmanaged<id, SEL, double, double>)xm.objc_msgSend_Raw)(this.instance, DoubleDoubleSelector, a);
             }
         }
 
@@ -289,7 +300,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                ((delegate* unmanaged[Cdecl]<id, SEL, void>)xm.objc_msgSend_Raw)(this.instance, UsePropertiesSelector);
+                ((delegate* unmanaged<id, SEL, void>)xm.objc_msgSend_Raw)(this.instance, UsePropertiesSelector);
             }
         }
     }
@@ -312,29 +323,29 @@ namespace MyConsoleApp
         //    // Register and define the class's methods.
         //    {
         //        SEL DoubleIntSelector = xm.sel_registerName("doubleInt:");
-        //        var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, int, int>)&DoubleIntProxy;
+        //        var impl = (IMP)(delegate* unmanaged<id, SEL, int, int>)&DoubleIntProxy;
         //        xm.class_addMethod(ClassType, DoubleIntSelector, impl, "i@:i");
         //    }
 
         //    {
         //        SEL DoubleFloatSelector = xm.sel_registerName("doubleFloat:");
-        //        var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, float, float>)&DoubleFloatProxy;
+        //        var impl = (IMP)(delegate* unmanaged<id, SEL, float, float>)&DoubleFloatProxy;
         //        xm.class_addMethod(ClassType, DoubleFloatSelector, impl, "f@:f");
         //    }
 
         //    {
         //        SEL DoubleDoubleSelector = xm.sel_registerName("doubleDouble:");
-        //        var impl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, double, double>)&DoubleDoubleProxy;
+        //        var impl = (IMP)(delegate* unmanaged<id, SEL, double, double>)&DoubleDoubleProxy;
         //        xm.class_addMethod(ClassType, DoubleDoubleSelector, impl, "d@:d");
         //    }
 
         //    {
         //        SEL GetDoubleDoubleBlockPropSelector = xm.sel_registerName("doubleDoubleBlockProp");
-        //        var getImpl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, nint>)&GetDoubleDoubleBlockPropProxy;
+        //        var getImpl = (IMP)(delegate* unmanaged<id, SEL, nint>)&GetDoubleDoubleBlockPropProxy;
         //        xm.class_addMethod(ClassType, GetDoubleDoubleBlockPropSelector, getImpl, "?@:");
 
         //        SEL SetDoubleDoubleBlockPropSelector = xm.sel_registerName("setDoubleDoubleBlockProp:");
-        //        var setImpl = (IMP)(delegate* unmanaged[Cdecl]<id, SEL, id, void>)&SetDoubleDoubleBlockPropProxy;
+        //        var setImpl = (IMP)(delegate* unmanaged<id, SEL, id, void>)&SetDoubleDoubleBlockPropProxy;
         //        xm.class_addMethod(ClassType, SetDoubleDoubleBlockPropSelector, setImpl, "v@:?");
         //    }
 

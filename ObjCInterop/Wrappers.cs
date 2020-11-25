@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Threading;
 
 using ObjCRuntime;
@@ -12,14 +13,98 @@ namespace System.Runtime.InteropServices.ObjectiveC
     public enum CreateInstanceFlags
     {
         None,
-        Block,
+    }
+
+    [Flags]
+    public enum CreateBlockFlags
+    {
+        None,
     }
 
     [Flags]
     public enum CreateObjectFlags
     {
         None,
+
+        /// <summary>
+        /// The supplied instance is a Block.
+        /// </summary>
         Block,
+
+        /// <summary>
+        /// The supplied instance should be check if it is actually a
+        /// wrapped managed object and not a pure Objective-C instance.
+        ///
+        /// If the instance is wrapped return the underlying managed object
+        /// instead of creating a new wrapper.
+        /// </summary>
+        Unwrap,
+    }
+
+    internal struct ManagedObjectWrapperLifetime
+    {
+        public IntPtr GCHandle;
+        public uint RefCount;
+    }
+
+    /// <summary>
+    /// An Objective-C object instance.
+    /// </summary>
+    public struct Instance
+    {
+        public IntPtr Isa;
+
+        public unsafe static T GetInstance<T>(Instance* instancePtr) where T : class
+        {
+            var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars((nint)instancePtr);
+            var gcHandle = GCHandle.FromIntPtr(lifetime->GCHandle);
+            return (T)gcHandle.Target;
+        }
+    }
+
+    /// <summary>
+    /// An Objective-C block instance.
+    /// </summary>
+    /// <remarks>
+    /// See http://clang.llvm.org/docs/Block-ABI-Apple.html#high-level for a
+    /// description of the ABI represented by this data structure.
+    /// </remarks>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BlockLiteral
+    {
+        internal IntPtr Isa;
+        internal int Flags;
+        internal int Reserved;
+        internal IntPtr Invoke; // delegate* unmanaged[Cdecl]<BlockLiteral* , ...args, ret>
+        internal unsafe DelegateBlockDesc* BlockDescriptor;
+
+        // Extension of ABI to help with .NET lifetime.
+        internal unsafe ManagedObjectWrapperLifetime* Lifetime;
+
+        /// <summary>
+        /// Get <typeparamref name="T"/> type from the supplied Block.
+        /// </summary>
+        /// <typeparam name="T">The delegate type the block is associated with.</typeparam>
+        /// <param name="block">The block instance</param>
+        /// <returns>A delegate</returns>
+        public unsafe static T GetDelegate<T>(BlockLiteral* block) where T : Delegate
+        {
+            var gcHandle = GCHandle.FromIntPtr(block->Lifetime->GCHandle);
+            return (T)gcHandle.Target;
+        }
+    }
+
+    /// <summary>
+    /// 
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe struct DelegateBlockDesc
+    {
+        public nint Reserved;
+        public nint Size;
+        public delegate* unmanaged[Cdecl]<BlockLiteral*, BlockLiteral*, void> Copy_helper;
+        public delegate* unmanaged[Cdecl]<BlockLiteral*, void> Dispose_helper;
+        public void* Signature;
     }
 
     /// <summary>
@@ -53,40 +138,6 @@ namespace System.Runtime.InteropServices.ObjectiveC
         }
 
         /// <summary>
-        /// Type when entering the managed environment from an Objective-C instance.
-        /// </summary>
-        public struct IdDispatch
-        {
-            public IntPtr Isa;
-            public unsafe static T GetInstance<T>(IdDispatch* dispatchPtr) where T : class
-            {
-                var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars((nint)dispatchPtr);
-                var gcHandle = GCHandle.FromIntPtr(lifetime->GCHandle);
-                return (T)gcHandle.Target;
-            }
-        }
-
-        private struct ManagedObjectWrapperLifetime
-        {
-            public nint GCHandle;
-            public nint RefCount;
-        }
-
-        /// <summary>
-        /// Type when entering the managed environment from an Objective-C block.
-        /// </summary>
-        public struct BlockDispatch
-        {
-            public IntPtr Isa;
-            public unsafe static T GetInstance<T>(BlockDispatch* dispatchPtr) where T : class
-            {
-                var block = (BlockLiteral*)dispatchPtr;
-                var gcHandle = GCHandle.FromIntPtr(block->DelegateGCHandle);
-                return (T)gcHandle.Target;
-            }
-        }
-
-        /// <summary>
         /// Get or create a Objective-C wrapper for the supplied managed object.
         /// </summary>
         /// <param name="instance">A managed object to wrap</param>
@@ -95,40 +146,28 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <see cref="ComputeInstanceClass(object, CreateInstanceFlags)"/>
         public IntPtr GetOrCreateInstanceForObject(object instance, CreateInstanceFlags flags)
         {
-            id native;
+            IntPtr native;
             if (Internals.TryGetIdentity(instance, out native))
             {
-                return native.value;
+                return native;
             }
 
-            if (flags.HasFlag(CreateInstanceFlags.Block))
+            unsafe
             {
-                Debug.Assert(instance is Delegate);
+                IntPtr klass = this.ComputeInstanceClass(instance, flags);
 
-                var asDelegate = (Delegate)instance;
-                string signature;
-                var invoker = this.GetBlockInvokeAndSignature(asDelegate, flags, out signature);
-                native = this.CreateBlock(asDelegate, invoker, signature);
-            }
-            else
-            {
-                unsafe
-                {
-                    IntPtr klass = this.ComputeInstanceClass(instance, flags);
+                // Add a lifetime size for the GC Handle.
+                native = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime)).value;
 
-                    // Add a lifetime size for the GC Handle.
-                    native = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime));
-
-                    var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(native);
-                    IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
-                    Trace.WriteLine($"Object: Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
-                    lifetime->GCHandle = gcptr;
-                    lifetime->RefCount = 1;
-                }
+                var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(native);
+                IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
+                Trace.WriteLine($"Object: Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
+                lifetime->GCHandle = gcptr;
+                lifetime->RefCount = 1;
             }
 
             Internals.RegisterIdentity(instance, native);
-            return native.value;
+            return native;
         }
 
         /// <summary>
@@ -144,19 +183,6 @@ namespace System.Runtime.InteropServices.ObjectiveC
         protected abstract IntPtr ComputeInstanceClass(object instance, CreateInstanceFlags flags);
 
         /// <summary>
-        /// Called if there is currently no existing Objective-C wrapper for a Delegate.
-        /// </summary>
-        /// <param name="del">Delegate for block</param>
-        /// <param name="flags">Flags for creation</param>
-        /// <param name="signature">Type Encoding for returned block</param>
-        /// <returns>A callable delegate to the Objective-C runtime</returns>
-        /// <remarks>
-        /// Defer to the implementer for determining the <see cref="https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html#//apple_ref/doc/uid/TP40008048-CH100">Block signature</see>
-        /// that should be used to project the managed Delegate.
-        /// </remarks>
-        protected abstract IntPtr GetBlockInvokeAndSignature(Delegate del, CreateInstanceFlags flags, out string signature);
-
-        /// <summary>
         /// Get or create a managed wrapper for the supplied Objective-C object.
         /// </summary>
         /// <param name="instance">An Objective-C object</param>
@@ -166,6 +192,18 @@ namespace System.Runtime.InteropServices.ObjectiveC
         public object GetOrCreateObjectForInstance(IntPtr instance, CreateObjectFlags flags)
         {
             object wrapper;
+
+            // If the supplied instance is a block and the caller has requested
+            // unwrapping of instances if they are actually managed objects, we
+            // take a closer look at the instance.
+            if (flags.HasFlag(CreateObjectFlags.Block | CreateObjectFlags.Unwrap))
+            {
+                if (TryInspectInstanceAsDelegateWrapper(instance, out wrapper))
+                {
+                    return wrapper;
+                }
+            }
+
             if (!Internals.TryGetObject(instance, out wrapper))
             {
                 wrapper = this.CreateObject(instance, flags);
@@ -202,109 +240,194 @@ namespace System.Runtime.InteropServices.ObjectiveC
             return wrapper;
         }
 
-        // http://clang.llvm.org/docs/Block-ABI-Apple.html#high-level
-        [StructLayout(LayoutKind.Sequential)]
-        private unsafe struct BlockLiteral
-        {
-            public void* Isa;
-            public int Flags;
-            public int Reserved;
-            public void* Invoke; // delegate* unmanaged[Cdecl]<BlockLiteral* , ...args, ret>
-            public void* BlockDescriptor;
-
-            // Extension of ABI to help with .NET lifetime.
-            public IntPtr DelegateGCHandle;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private unsafe struct DelegateBlockDesc
-        {
-            public nint Reserved;
-            public nint Size;
-            public delegate* unmanaged[Cdecl]<void*, void*, void> Copy_helper;
-            public delegate* unmanaged[Cdecl]<void*, void> Dispose_helper;
-            public void* Signature;
-
-            // Extension of ABI to help with .NET lifetime.
-            public uint RefCount;
-        }
-
-        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-        private unsafe static void CopyBlock(void* dst, void* src)
-        {
-            Trace.WriteLine($"CopyBlock: dst: {(long)dst:x} src: {(long)src:x}");
-
-            var blockSrc = (BlockLiteral*)src;
-            var blockDescSrc = (DelegateBlockDesc*)blockSrc->BlockDescriptor;
-            var blockDst = (BlockLiteral*)dst;
-
-            uint count = Interlocked.Increment(ref blockDescSrc->RefCount);
-            Debug.Assert(count > 1);
-            blockDst->BlockDescriptor = blockDescSrc;
-            blockDst->DelegateGCHandle = blockSrc->DelegateGCHandle;
-
-            object del = GCHandle.FromIntPtr(blockSrc->DelegateGCHandle).Target;
-            Internals.RegisterIdentity(del, (nint)dst);
-        }
-
-        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-        private unsafe static void DisposeBlock(void* blk)
-        {
-            Trace.WriteLine($"DisposeBlock: blk: {(long)blk:x}");
-
-            var block = (BlockLiteral*)blk;
-            var blockDesc = (DelegateBlockDesc*)block->BlockDescriptor;
-
-            // Cleanup the delegate's handle
-            GCHandle.FromIntPtr(block->DelegateGCHandle).Free();
-
-            uint count = Interlocked.Decrement(ref blockDesc->RefCount);
-            Debug.Assert(blockDesc->RefCount != uint.MaxValue);
-            if (count != 0)
-            {
-                return;
-            }
-
-            Marshal.FreeCoTaskMem((IntPtr)blockDesc->Signature);
-            Marshal.FreeCoTaskMem((IntPtr)blockDesc);
-            block->BlockDescriptor = null;
-        }
-
         /// <summary>
-        /// Given a <see cref="Delegate"/>, create an Objective-C block that can be passed
-        /// to the Objective-C environment.
+        /// Get or create a Objective-C Block for the supplied Delegate.
         /// </summary>
-        /// <param name="delegateInstance">The delegate to wrap</param>
-        /// <param name="invoker">Function to invoke during dispatch</param>
-        /// <param name="signature">The Objective-C type signature of the function</param>
-        /// <returns>An Objective-C block</returns>
-        /// <remarks>
-        /// See <see href="https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html">Objective-C Type Encodings</see> for how to specify <paramref name="signature"/>.
-        ///
-        /// See <see href="http://clang.llvm.org/docs/Block-ABI-Apple.html">Objective-C Block ABI</see> for the supported contract.
-        /// </remarks>
-        private IntPtr CreateBlock(Delegate delegateInstance, IntPtr invoker, string signature)
+        /// <param name="instance">A Delegate to wrap</param>
+        /// <param name="flags">Flags for creation</param>
+        /// <returns>An Objective-C Block</returns>
+        /// <see cref="ComputeInstanceClass(object, CreateInstanceFlags)"/>
+        public BlockLiteral GetOrCreateBlockForDelegate(Delegate instance, CreateBlockFlags flags)
         {
-            var delegateHandle = GCHandle.Alloc(delegateInstance);
+            IntPtr blockDetails = default;
 
             unsafe
             {
-                var desc = (DelegateBlockDesc*)Marshal.AllocCoTaskMem(sizeof(DelegateBlockDesc));
-                desc->Reserved = 0;
-                desc->Size = sizeof(BlockLiteral);
-                desc->Copy_helper = &CopyBlock;
-                desc->Dispose_helper = &DisposeBlock;
-                desc->Signature = Marshal.StringToCoTaskMemUTF8(signature).ToPointer();
-                desc->RefCount = 1;
+                BlockDetails* details;
+                if (Internals.TryGetIdentity(instance, out blockDetails))
+                {
+                    details = (BlockDetails*)blockDetails;
+                }
+                else
+                {
+                    string signature;
+                    var invoker = this.GetBlockInvokeAndSignature(instance, flags, out signature);
 
-                var block = (BlockLiteral*)Marshal.AllocCoTaskMem(sizeof(BlockLiteral));
-                block->Isa = xm._NSConcreteStackBlock_Raw;
-                block->Flags = (1 << 25) | (1 << 30); // Descriptor contains copy/dispose and signature.
-                block->Invoke = invoker.ToPointer();
-                block->BlockDescriptor = desc;
-                block->DelegateGCHandle = GCHandle.ToIntPtr(delegateHandle);
+                    details = CreateBlockDetails(instance, invoker, signature);
+                    Internals.RegisterIdentity(instance, (IntPtr)details);
+                }
 
-                return (nint)block;
+                return CreateBlock(&details->Desc, &details->Lifetime, details->Invoker);
+            }
+        }
+
+        /// <summary>
+        /// Called if there is currently no existing Objective-C wrapper for a Delegate.
+        /// </summary>
+        /// <param name="del">Delegate for block</param>
+        /// <param name="flags">Flags for creation</param>
+        /// <param name="signature">Type Encoding for returned block</param>
+        /// <returns>A callable delegate to the Objective-C runtime</returns>
+        /// <remarks>
+        /// Defer to the implementer for determining the <see cref="https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html#//apple_ref/doc/uid/TP40008048-CH100">Block signature</see>
+        /// that should be used to project the managed Delegate.
+        /// </remarks>
+        protected abstract IntPtr GetBlockInvokeAndSignature(Delegate del, CreateBlockFlags flags, out string signature);
+
+        /// <summary>
+        /// Release the supplied block.
+        /// </summary>
+        /// <param name="block">The block to release</param>
+        public void ReleaseBlockLiteral(ref BlockLiteral block)
+        {
+            ReleaseBlock(ref block);
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private unsafe static void CopyBlock(BlockLiteral* blockDst, BlockLiteral* blockSrc)
+        {
+            Trace.WriteLine($"CopyBlock: dst: {(long)blockDst:x} src: {(long)blockSrc:x}");
+
+            Debug.Assert(blockSrc->Lifetime != null);
+            Debug.Assert(blockSrc->BlockDescriptor != null);
+
+            var blockDescSrc = blockSrc->BlockDescriptor;
+
+            // Extend the lifetime of the delegate
+            {
+                uint count = Interlocked.Increment(ref blockSrc->Lifetime->RefCount);
+                Debug.Assert(count != 1);
+            }
+
+            blockDst->BlockDescriptor = blockDescSrc;
+            blockDst->Lifetime = blockSrc->Lifetime;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private unsafe static void DisposeBlock(BlockLiteral* block)
+        {
+            Trace.WriteLine($"DisposeBlock: blk: {(long)block:x}");
+
+            ReleaseBlock(ref *block);
+        }
+
+        private unsafe static void ReleaseBlock(ref BlockLiteral block)
+        {
+            Debug.Assert(block.Lifetime != null);
+            Debug.Assert(block.BlockDescriptor != null);
+
+            DelegateBlockDesc* blockDesc = block.BlockDescriptor;
+
+            // Decrement the ref count on the delegate
+            {
+                uint count = Interlocked.Decrement(ref block.Lifetime->RefCount);
+                Debug.Assert(count != uint.MaxValue);
+
+                block.Lifetime = null;
+            }
+
+            // Remove the associated block description.
+            block.BlockDescriptor = null;
+        }
+
+        private struct BlockDetails
+        {
+            public DelegateBlockDesc Desc;
+            public ManagedObjectWrapperLifetime Lifetime;
+            public IntPtr Invoker;
+        }
+
+        // See https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html for signature details
+        private unsafe static BlockDetails* CreateBlockDetails(Delegate delegateInstance, IntPtr invoker, string signature)
+        {
+            byte[] signatureBytes = Encoding.UTF8.GetBytes(signature);
+            var details = (BlockDetails*)Marshal.AllocCoTaskMem(sizeof(BlockDetails) + signatureBytes.Length + 1);
+
+            // Copy the siganture types into the extra space at the end of the BlockDetails structure.
+            byte* sigDest = (byte*)details + sizeof(BlockDetails);
+            var signatureDest = new Span<byte>(sigDest, signatureBytes.Length + 1);
+            signatureBytes.CopyTo(signatureDest);
+
+            // Set up description.
+            details->Desc.Reserved = 0;
+            details->Desc.Size = sizeof(BlockLiteral);
+            details->Desc.Copy_helper = &CopyBlock;
+            details->Desc.Dispose_helper = &DisposeBlock;
+            details->Desc.Signature = sigDest;
+
+            // Set up lifetime portion.
+            var delegateHandle = GCHandle.Alloc(delegateInstance);
+            details->Lifetime.GCHandle = GCHandle.ToIntPtr(delegateHandle);
+            details->Lifetime.RefCount = 1;
+
+            // Store the invoke function pointer.
+            details->Invoker = invoker;
+
+            Debug.Assert(details == &details->Desc);
+            return details;
+        }
+
+        // See https://clang.llvm.org/docs/Block-ABI-Apple.html
+        // Our Block contains:
+        private const int DotNetBlockLiteralFlags =
+            (1 << 25)       // copy/dispose helpers
+            | (1 << 30);    // Function signature
+
+        private unsafe static BlockLiteral CreateBlock(DelegateBlockDesc* desc, ManagedObjectWrapperLifetime* lifetime, IntPtr invoker)
+        {
+            return new BlockLiteral()
+            {
+                Isa = (IntPtr)xm._NSConcreteStackBlock_Raw,
+                Flags = DotNetBlockLiteralFlags,
+                Invoke = invoker,
+                BlockDescriptor = desc,
+                Lifetime = lifetime
+            };
+        }
+
+        private static bool TryInspectInstanceAsDelegateWrapper(IntPtr blockWrapperMaybe, out object managed)
+        {
+            Debug.Assert(blockWrapperMaybe != default(IntPtr));
+            managed = null;
+
+            unsafe
+            {
+                var block = (BlockLiteral*)blockWrapperMaybe;
+
+                // First check if the flags we set are present.
+                if ((block->Flags & DotNetBlockLiteralFlags) != DotNetBlockLiteralFlags)
+                {
+                    return false;
+                }
+
+                // Our flags indicate we set copy/dispose helper functions and a signature.
+                // This means the block could be one we created or another block with
+                // helpers and a signature. In order to fully clarify, check if the helpers
+                // are our internal versions.
+                void* copyHelper = block->BlockDescriptor->Copy_helper;
+                void* disposeHelper = block->BlockDescriptor->Dispose_helper;
+                if (copyHelper != (delegate* unmanaged[Cdecl]<BlockLiteral*, BlockLiteral*, void>)&CopyBlock
+                    || disposeHelper != (delegate* unmanaged[Cdecl]<BlockLiteral*, void>)&DisposeBlock)
+                {
+                    return false;
+                }
+
+                // At this point we know this is a block we created. Therefore, we can
+                // use our internal fields on the BlockLiteral data structure to get
+                // at the underlying managed object.
+                Debug.Assert(block->Lifetime->RefCount > 0);
+                managed = GCHandle.FromIntPtr(block->Lifetime->GCHandle).Target;
+                return true;
             }
         }
 
@@ -440,22 +563,15 @@ namespace System.Runtime.InteropServices.ObjectiveC
         private static class Internals
         {
             private static readonly ReaderWriterLockSlim RegisteredIdentityLock = new ReaderWriterLockSlim();
-            private static readonly Dictionary<object, List<id>> ObjectToIdentity = new Dictionary<object, List<id>>();
-            private static readonly Dictionary<id, object> IdentityToObject = new Dictionary<id, object>();
-            public static void RegisterIdentity(object managed, id native)
+            private static readonly Dictionary<object, IntPtr> ObjectToIdentity = new Dictionary<object, IntPtr>();
+            private static readonly Dictionary<IntPtr, object> IdentityToObject = new Dictionary<IntPtr, object>();
+            public static void RegisterIdentity(object managed, IntPtr native)
             {
                 RegisteredIdentityLock.EnterWriteLock();
 
                 try
                 {
-                    List<id> ids;
-                    if (!ObjectToIdentity.TryGetValue(managed, out ids))
-                    {
-                        ids = new List<id>();
-                        ObjectToIdentity.Add(managed, ids);
-                    }
-
-                    ids.Add(native);
+                    ObjectToIdentity.Add(managed, native);
                     IdentityToObject.Add(native, managed);
                 }
                 finally
@@ -463,28 +579,20 @@ namespace System.Runtime.InteropServices.ObjectiveC
                     RegisteredIdentityLock.ExitWriteLock();
                 }
             }
-            public static bool TryGetIdentity(object managed, out id native)
+            public static bool TryGetIdentity(object managed, out IntPtr native)
             {
                 RegisteredIdentityLock.EnterReadLock();
 
                 try
                 {
-                    List<id> ids;
-                    if (!ObjectToIdentity.TryGetValue(managed, out ids))
-                    {
-                        native = xm.nil;
-                        return false;
-                    }
-
-                    native = ids[0];
-                    return true;
+                    return ObjectToIdentity.TryGetValue(managed, out native);
                 }
                 finally
                 {
                     RegisteredIdentityLock.ExitReadLock();
                 }
             }
-            public static bool TryGetObject(id native, out object managed)
+            public static bool TryGetObject(IntPtr native, out object managed)
             {
                 RegisteredIdentityLock.EnterReadLock();
 
