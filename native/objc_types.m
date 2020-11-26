@@ -22,6 +22,7 @@ typedef int (^intBlock)(int);
 - (double)doubleDouble: (double)a;
 
 - (void)useProperties;
+- (void)useTestDotNet:(TestDotNet*) dn;
 @end
 
 void dummy(id i);
@@ -39,19 +40,6 @@ static intBlock _intBlockPropStatic;
     }
 }
 
-intBlock _intBlockProp;
-- (intBlock)intBlockProp {
-    return _intBlockProp;
-}
-- (void)setIntBlockProp:(intBlock) blk {
-    if (_intBlockProp != blk) {
-        [_intBlockProp release];
-        _intBlockProp = [blk copy];
-    }
-}
-
-TestDotNet* _proxy;
-
 - (float)doubleFloat: (float)a {
     //NSLog(@"doubleFloat: %f", a);
     return a * 2.;
@@ -66,16 +54,42 @@ TestDotNet* _proxy;
     int b;
     intBlock blk;
 
-    blk = self.intBlockProp;
-    b = blk(13);
-    printf("Calling intBlockProp(%d) = %d\n", a, b);
+    @autoreleasepool {
+        blk = self.intBlockProp;
+        if (blk != nil) {
+            b = blk(a);
+            printf("Called intBlockProp(%d) = %d\n", a, b);
+        }
 
-    //dummy(blk);
+        blk = TestObjC.intBlockPropStatic;
+        if (blk != nil) {
+            b = blk(a);
+            printf("Called intBlockPropStatic(%d) = %d\n", a, b);
+        }
+    }
+}
+- (void)useTestDotNet:(TestDotNet*) dn {
+    int a = 13;
+    int b;
+    intBlock blk;
 
-    blk = TestObjC.intBlockPropStatic;
-    b = blk(13);
-    printf("Calling intBlockPropStatic(%d) = %d\n", a, b);
+    @autoreleasepool {
+        blk = dn.intBlockProp;
+        if (blk != nil) {
+            b = blk(a);
+            printf("Called TestDotNet.intBlockProp(%d) = %d\n", a, b);
+        }
 
-    //dummy(blk);
+        dn.intBlockProp = ^(int a) {
+            return a * 4;
+        };
+        printf("Set TestDotNet.intBlockProp\n");
+
+        blk = dn.intBlockProp;
+        if (blk != nil) {
+            b = blk(a);
+            printf("Called TestDotNet.intBlockProp(%d) = %d\n", a, b);
+        }
+    }
 }
 @end

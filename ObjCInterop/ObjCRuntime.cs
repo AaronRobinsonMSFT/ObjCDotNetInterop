@@ -156,10 +156,10 @@ namespace ObjCRuntime
         public extern static void* object_getIndexedIvars(id obj);
 
         [DllImport(nameof(xm), EntryPoint = "Block_copy_proxy")]
-        public extern static id Block_copy(id block);
+        public extern static void* Block_copy(void* block);
 
         [DllImport(nameof(xm), EntryPoint = "Block_release_proxy")]
-        public extern static void Block_release(id block);
+        public extern static void Block_release(void* block);
 
         public static readonly Class noclass = new Class(0);
         public static readonly id nil = new id(0);

@@ -16,20 +16,30 @@ namespace System.Runtime.InteropServices.ObjectiveC
     }
 
     [Flags]
+    public enum CreateObjectFlags
+    {
+        None,
+
+        /// <summary>
+        /// The supplied instance should be check if it is actually a
+        /// wrapped managed object and not a pure Objective-C instance.
+        ///
+        /// If the instance is wrapped return the underlying managed object
+        /// instead of creating a new wrapper.
+        /// </summary>
+        //Unwrap,
+    }
+
+    [Flags]
     public enum CreateBlockFlags
     {
         None,
     }
 
     [Flags]
-    public enum CreateObjectFlags
+    public enum CreateDelegateFlags
     {
         None,
-
-        /// <summary>
-        /// The supplied instance is a Block.
-        /// </summary>
-        Block,
 
         /// <summary>
         /// The supplied instance should be check if it is actually a
@@ -108,6 +118,30 @@ namespace System.Runtime.InteropServices.ObjectiveC
     }
 
     /// <summary>
+    /// Type used to represent the invoking function and associated context.
+    /// </summary>
+    public sealed class BlockDispatch
+    {
+        /// <summary>
+        /// Block instance.
+        /// </summary>
+        public IntPtr Block { get; init; }
+
+        /// <summary>
+        /// The function pointer to invoke for dispatch.
+        /// </summary>
+        /// <remarks>
+        /// The C# function pointer syntax is dependent on the signature of the
+        /// block, but does takes the <see cref="Block"/> as the first argument.
+        /// For example:
+        /// <code>
+        /// delegate* unmanaged[Cdecl]&lt;IntPtr [, arg]*, ret&gt;
+        /// </code>
+        /// </remarks>
+        public IntPtr Invoker { get; init; }
+    }
+
+    /// <summary>
     /// Class used to create wrappers for interoperability with the Objective-C runtime.
     /// </summary>
     public abstract class Wrappers
@@ -146,10 +180,10 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <see cref="ComputeInstanceClass(object, CreateInstanceFlags)"/>
         public IntPtr GetOrCreateInstanceForObject(object instance, CreateInstanceFlags flags)
         {
-            IntPtr native;
-            if (Internals.TryGetIdentity(instance, out native))
+            IntPtr wrapper;
+            if (Internals.TryGetIdentity(instance, RuntimeOrigin.DotNet, out wrapper))
             {
-                return native;
+                return wrapper;
             }
 
             unsafe
@@ -157,17 +191,17 @@ namespace System.Runtime.InteropServices.ObjectiveC
                 IntPtr klass = this.ComputeInstanceClass(instance, flags);
 
                 // Add a lifetime size for the GC Handle.
-                native = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime)).value;
+                wrapper = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime)).value;
 
-                var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(native);
+                var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(wrapper);
                 IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
                 Trace.WriteLine($"Object: Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
                 lifetime->GCHandle = gcptr;
                 lifetime->RefCount = 1;
             }
 
-            Internals.RegisterIdentity(instance, native);
-            return native;
+            Internals.RegisterIdentity(instance, wrapper, RuntimeOrigin.DotNet);
+            return wrapper;
         }
 
         /// <summary>
@@ -192,24 +226,13 @@ namespace System.Runtime.InteropServices.ObjectiveC
         public object GetOrCreateObjectForInstance(IntPtr instance, CreateObjectFlags flags)
         {
             object wrapper;
-
-            // If the supplied instance is a block and the caller has requested
-            // unwrapping of instances if they are actually managed objects, we
-            // take a closer look at the instance.
-            if (flags.HasFlag(CreateObjectFlags.Block | CreateObjectFlags.Unwrap))
+            if (Internals.TryGetObject(instance, RuntimeOrigin.ObjectiveC, out wrapper))
             {
-                if (TryInspectInstanceAsDelegateWrapper(instance, out wrapper))
-                {
-                    return wrapper;
-                }
+                return wrapper;
             }
 
-            if (!Internals.TryGetObject(instance, out wrapper))
-            {
-                wrapper = this.CreateObject(instance, flags);
-                Internals.RegisterIdentity(wrapper, instance);
-            }
-
+            wrapper = this.CreateObject(instance, flags);
+            Internals.RegisterIdentity(wrapper, instance, RuntimeOrigin.ObjectiveC);
             return wrapper;
         }
 
@@ -231,9 +254,9 @@ namespace System.Runtime.InteropServices.ObjectiveC
         public object GetOrRegisterObjectForInstance(IntPtr instance, CreateObjectFlags flags, object wrapperMaybe)
         {
             object wrapper;
-            if (!Internals.TryGetObject(instance, out wrapper))
+            if (!Internals.TryGetObject(instance, RuntimeOrigin.ObjectiveC, out wrapper))
             {
-                Internals.RegisterIdentity(wrapperMaybe, instance);
+                Internals.RegisterIdentity(wrapperMaybe, instance, RuntimeOrigin.ObjectiveC);
                 wrapper = wrapperMaybe;
             }
 
@@ -249,14 +272,12 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <see cref="ComputeInstanceClass(object, CreateInstanceFlags)"/>
         public BlockLiteral GetOrCreateBlockForDelegate(Delegate instance, CreateBlockFlags flags)
         {
-            IntPtr blockDetails = default;
-
             unsafe
             {
                 BlockDetails* details;
-                if (Internals.TryGetIdentity(instance, out blockDetails))
+                if (Internals.TryGetIdentity(instance, RuntimeOrigin.DotNet, out IntPtr blockDetailsMaybe))
                 {
-                    details = (BlockDetails*)blockDetails;
+                    details = (BlockDetails*)blockDetailsMaybe;
                 }
                 else
                 {
@@ -264,7 +285,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
                     var invoker = this.GetBlockInvokeAndSignature(instance, flags, out signature);
 
                     details = CreateBlockDetails(instance, invoker, signature);
-                    Internals.RegisterIdentity(instance, (IntPtr)details);
+                    Internals.RegisterIdentity(instance, (IntPtr)details, RuntimeOrigin.DotNet);
                 }
 
                 return CreateBlock(&details->Desc, &details->Lifetime, details->Invoker);
@@ -283,6 +304,60 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// that should be used to project the managed Delegate.
         /// </remarks>
         protected abstract IntPtr GetBlockInvokeAndSignature(Delegate del, CreateBlockFlags flags, out string signature);
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="dispatch"></param>
+        /// <returns></returns>
+        public delegate Delegate CreateDelegate(BlockDispatch dispatch);
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="block"></param>
+        /// <param name="flags"></param>
+        /// <param name="del"></param>
+        /// <returns></returns>
+        public Delegate GetOrCreateDelegateForBlock(IntPtr block, CreateDelegateFlags flags, CreateDelegate createDelegate)
+        {
+            Delegate registeredDelegate;
+            if (flags.HasFlag(CreateDelegateFlags.Unwrap))
+            {
+                // Check if block is a wrapper for an actual delegate.
+                if (TryInspectInstanceAsDelegateWrapper(block, out registeredDelegate))
+                {
+                    return registeredDelegate;
+                }
+            }
+
+            // Check if a delegate already exists.
+            if (Internals.TryGetObject(block, RuntimeOrigin.ObjectiveC, out object managed))
+            {
+                return (Delegate)managed;
+            }
+
+            // Decompose the pointer to the Objective-C Block ABI and retrieve
+            // the needed values.
+            BlockDispatch dispatch;
+            unsafe
+            {
+                var blockLiteral = (BlockLiteral*)block;
+                dispatch = new BlockDispatch()
+                {
+                    Block = block,
+                    Invoker = blockLiteral->Invoke
+                };
+            }
+
+            // Call the supplied create delegate with the values needed to
+            // invoke the Block.
+            Delegate wrappedBlock = createDelegate(dispatch);
+
+            // [TODO] Register for block release (i.e. Block_release).
+            Internals.RegisterIdentity(wrappedBlock, block, RuntimeOrigin.ObjectiveC);
+            return wrappedBlock;
+        }
 
         /// <summary>
         /// Release the supplied block.
@@ -353,19 +428,19 @@ namespace System.Runtime.InteropServices.ObjectiveC
             byte[] signatureBytes = Encoding.UTF8.GetBytes(signature);
             var details = (BlockDetails*)Marshal.AllocCoTaskMem(sizeof(BlockDetails) + signatureBytes.Length + 1);
 
-            // Copy the siganture types into the extra space at the end of the BlockDetails structure.
+            // Copy the siganture into the extra space at the end of the BlockDetails structure.
             byte* sigDest = (byte*)details + sizeof(BlockDetails);
             var signatureDest = new Span<byte>(sigDest, signatureBytes.Length + 1);
             signatureBytes.CopyTo(signatureDest);
 
-            // Set up description.
+            // Initialize description.
             details->Desc.Reserved = 0;
             details->Desc.Size = sizeof(BlockLiteral);
             details->Desc.Copy_helper = &CopyBlock;
             details->Desc.Dispose_helper = &DisposeBlock;
             details->Desc.Signature = sigDest;
 
-            // Set up lifetime portion.
+            // Initialize lifetime.
             var delegateHandle = GCHandle.Alloc(delegateInstance);
             details->Lifetime.GCHandle = GCHandle.ToIntPtr(delegateHandle);
             details->Lifetime.RefCount = 1;
@@ -373,6 +448,10 @@ namespace System.Runtime.InteropServices.ObjectiveC
             // Store the invoke function pointer.
             details->Invoker = invoker;
 
+            // Since the Block Descriptor is required by the Block ABI, we
+            // utilize that address as the opaque handle that will be released
+            // when the associated Delegate is collected when the lifetime
+            // reference count hits 0.
             Debug.Assert(details == &details->Desc);
             return details;
         }
@@ -395,10 +474,10 @@ namespace System.Runtime.InteropServices.ObjectiveC
             };
         }
 
-        private static bool TryInspectInstanceAsDelegateWrapper(IntPtr blockWrapperMaybe, out object managed)
+        private static bool TryInspectInstanceAsDelegateWrapper(IntPtr blockWrapperMaybe, out Delegate del)
         {
             Debug.Assert(blockWrapperMaybe != default(IntPtr));
-            managed = null;
+            del = null;
 
             unsafe
             {
@@ -426,75 +505,8 @@ namespace System.Runtime.InteropServices.ObjectiveC
                 // use our internal fields on the BlockLiteral data structure to get
                 // at the underlying managed object.
                 Debug.Assert(block->Lifetime->RefCount > 0);
-                managed = GCHandle.FromIntPtr(block->Lifetime->GCHandle).Target;
+                del = (Delegate)GCHandle.FromIntPtr(block->Lifetime->GCHandle).Target;
                 return true;
-            }
-        }
-
-        /// <summary>
-        /// Type used to represent the dispatching function and associated context.
-        /// </summary>
-        public sealed class BlockProxy : IDisposable
-        {
-            /// <summary>
-            /// Block instance.
-            /// </summary>
-            public IntPtr Block { get; init; }
-
-            /// <summary>
-            /// The function pointer to call for dispatch.
-            /// </summary>
-            /// <remarks>
-            /// The C# function pointer syntax is dependent on the signature of the
-            /// block, but does takes the <see cref="Block"/> as the first argument.
-            /// For example:
-            /// <code>
-            /// delegate* unmanaged[Cdecl]&lt;IntPtr [, arg]*, ret&gt;
-            /// </code>
-            /// </remarks>
-            public IntPtr FunctionPointer { get; init; }
-
-            /// <inheritdoc />
-            public void Dispose()
-            {
-                this.Dispose(true);
-                GC.SuppressFinalize(this);
-            }
-
-            private bool isDisposed = false;
-
-            ~BlockProxy()
-            {
-                this.Dispose(false);
-            }
-
-            private void Dispose(bool disposing)
-            {
-                if (this.isDisposed)
-                {
-                    return;
-                }
-
-                xm.Block_release(this.Block);
-                this.isDisposed = true;
-            }
-        }
-
-        /// <summary>
-        /// Create a <see cref="BlockProxy"/> for <paramref name="block"/>.
-        /// </summary>
-        /// <param name="block">Objective-C block</param>
-        /// <returns>Proxy to use for dispatch</returns>
-        /// <remarks>
-        /// See <see href="http://clang.llvm.org/docs/Block-ABI-Apple.html">Objective-C Block ABI</see> for the supported contract.
-        /// </remarks>
-        protected BlockProxy CreateBlockProxy(IntPtr block)
-        {
-            // Ownership has been transferred at this point (i.e. someone else has called [block copy]).
-            unsafe
-            {
-                BlockLiteral* blockLiteral = (BlockLiteral*)block;
-                return new BlockProxy() { Block = block, FunctionPointer = (IntPtr)blockLiteral->Invoke };
             }
         }
 
@@ -560,45 +572,78 @@ namespace System.Runtime.InteropServices.ObjectiveC
             throw new NotImplementedException();
         }
 
+        private enum RuntimeOrigin
+        {
+            DotNet,
+            ObjectiveC,
+        }
+
         private static class Internals
         {
             private static readonly ReaderWriterLockSlim RegisteredIdentityLock = new ReaderWriterLockSlim();
-            private static readonly Dictionary<object, IntPtr> ObjectToIdentity = new Dictionary<object, IntPtr>();
-            private static readonly Dictionary<IntPtr, object> IdentityToObject = new Dictionary<IntPtr, object>();
-            public static void RegisterIdentity(object managed, IntPtr native)
+            private static readonly Dictionary<object, IntPtr> ObjectToIdentity_DotNet = new Dictionary<object, IntPtr>();
+            private static readonly Dictionary<IntPtr, object> IdentityToObject_DotNet = new Dictionary<IntPtr, object>();
+            private static readonly Dictionary<object, IntPtr> ObjectToIdentity_ObjectiveC = new Dictionary<object, IntPtr>();
+            private static readonly Dictionary<IntPtr, object> IdentityToObject_ObjectiveC = new Dictionary<IntPtr, object>();
+            public static void RegisterIdentity(object managed, IntPtr native, RuntimeOrigin origin)
             {
                 RegisteredIdentityLock.EnterWriteLock();
 
                 try
                 {
-                    ObjectToIdentity.Add(managed, native);
-                    IdentityToObject.Add(native, managed);
+                    if (origin == RuntimeOrigin.DotNet)
+                    {
+                        ObjectToIdentity_DotNet.Add(managed, native);
+                        IdentityToObject_DotNet.Add(native, managed);
+                    }
+                    else
+                    {
+                        Debug.Assert(origin == RuntimeOrigin.ObjectiveC);
+                        ObjectToIdentity_ObjectiveC.Add(managed, native);
+                        IdentityToObject_ObjectiveC.Add(native, managed);
+                    }
                 }
                 finally
                 {
                     RegisteredIdentityLock.ExitWriteLock();
                 }
             }
-            public static bool TryGetIdentity(object managed, out IntPtr native)
+            public static bool TryGetIdentity(object managed, RuntimeOrigin origin, out IntPtr native)
             {
                 RegisteredIdentityLock.EnterReadLock();
 
                 try
                 {
-                    return ObjectToIdentity.TryGetValue(managed, out native);
+                    if (origin == RuntimeOrigin.DotNet)
+                    {
+                        return ObjectToIdentity_DotNet.TryGetValue(managed, out native);
+                    }
+                    else
+                    {
+                        Debug.Assert(origin == RuntimeOrigin.ObjectiveC);
+                        return ObjectToIdentity_ObjectiveC.TryGetValue(managed, out native);
+                    }
                 }
                 finally
                 {
                     RegisteredIdentityLock.ExitReadLock();
                 }
             }
-            public static bool TryGetObject(IntPtr native, out object managed)
+            public static bool TryGetObject(IntPtr native, RuntimeOrigin origin, out object managed)
             {
                 RegisteredIdentityLock.EnterReadLock();
 
                 try
                 {
-                    return IdentityToObject.TryGetValue(native, out managed);
+                    if (origin == RuntimeOrigin.DotNet)
+                    {
+                        return IdentityToObject_DotNet.TryGetValue(native, out managed);
+                    }
+                    else
+                    {
+                        Debug.Assert(origin == RuntimeOrigin.ObjectiveC);
+                        return IdentityToObject_ObjectiveC.TryGetValue(native, out managed);
+                    }
                 }
                 finally
                 {
