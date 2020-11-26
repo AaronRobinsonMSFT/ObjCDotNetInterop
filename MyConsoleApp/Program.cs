@@ -240,7 +240,7 @@ namespace MyConsoleApp
                     BlockLiteral* blockRaw = null;
                     if (value != null)
                     {
-                        block = MyWrappers.Instance.GetOrCreateBlockForDelegate(value, CreateBlockFlags.None);
+                        block = MyWrappers.Instance.CreateBlockForDelegate(value, CreateBlockFlags.None);
                         blockRaw = &block;
                     }
 
@@ -289,7 +289,7 @@ namespace MyConsoleApp
                     BlockLiteral* blockRaw = null;
                     if (value != null)
                     {
-                        block = MyWrappers.Instance.GetOrCreateBlockForDelegate(value, CreateBlockFlags.None);
+                        block = MyWrappers.Instance.CreateBlockForDelegate(value, CreateBlockFlags.None);
                         blockRaw = &block;
                     }
 
@@ -334,7 +334,7 @@ namespace MyConsoleApp
                 IntPtr id_dn = default;
                 if (dn != null)
                 {
-                    id_dn = MyWrappers.Instance.GetOrCreateInstanceForObject(dn, CreateInstanceFlags.None);
+                    id_dn = MyWrappers.Instance.GetOrCreateInstanceForObject(dn, CreateInstanceFlags.Unwrap);
                 }
 
                 ((delegate* unmanaged<id, SEL, IntPtr, void>)xm.objc_msgSend_Raw)(this.instance, UseTestDotNetSelector, id_dn);
@@ -425,8 +425,12 @@ namespace MyConsoleApp
                 TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self.value);
                 Trace.WriteLine($"GetIntBlockPropProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
 
-                BlockLiteral block = MyWrappers.Instance.GetOrCreateBlockForDelegate(managed.IntBlockProp, CreateBlockFlags.None);
+                BlockLiteral block = MyWrappers.Instance.CreateBlockForDelegate(managed.IntBlockProp, CreateBlockFlags.None);
+
+                // [TODO] Getters typically do a retain followed by an autorelease call. It isn't obvious if
+                // a Block_copy() call is appropriate, but it would seem to be given my curreny understanding.
                 void* newBlock = xm.Block_copy(&block);
+                MyWrappers.Instance.ReleaseBlockLiteral(ref block);
 
                 return (IntPtr)newBlock;
             }

@@ -13,6 +13,15 @@ namespace System.Runtime.InteropServices.ObjectiveC
     public enum CreateInstanceFlags
     {
         None,
+
+        /// <summary>
+        /// The supplied managed object should be check if it is a
+        /// wrapped Objective-C instance and not a pure managed object.
+        ///
+        /// If the object is wrapped return the underlying Objective-C
+        /// instance instead of creating a new wrapper.
+        /// </summary>
+        Unwrap,
     }
 
     [Flags]
@@ -187,6 +196,12 @@ namespace System.Runtime.InteropServices.ObjectiveC
         public IntPtr GetOrCreateInstanceForObject(object instance, CreateInstanceFlags flags)
         {
             IntPtr wrapper;
+            if (flags.HasFlag(CreateInstanceFlags.Unwrap)
+                && Internals.TryGetIdentity(instance, RuntimeOrigin.ObjectiveC, out wrapper))
+            {
+                return wrapper;
+            }
+
             if (Internals.TryGetIdentity(instance, RuntimeOrigin.DotNet, out wrapper))
             {
                 return wrapper;
@@ -282,13 +297,13 @@ namespace System.Runtime.InteropServices.ObjectiveC
         }
 
         /// <summary>
-        /// Get or create a Objective-C Block for the supplied Delegate.
+        /// Create a Objective-C Block for the supplied Delegate.
         /// </summary>
         /// <param name="instance">A Delegate to wrap</param>
         /// <param name="flags">Flags for creation</param>
         /// <returns>An Objective-C Block</returns>
         /// <see cref="GetBlockInvokeAndSignature(Delegate, CreateBlockFlags, out string)"/>
-        public BlockLiteral GetOrCreateBlockForDelegate(Delegate instance, CreateBlockFlags flags)
+        public BlockLiteral CreateBlockForDelegate(Delegate instance, CreateBlockFlags flags)
         {
             unsafe
             {
