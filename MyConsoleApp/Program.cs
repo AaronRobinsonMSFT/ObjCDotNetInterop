@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ObjectiveC;
 using System.Threading;
@@ -10,27 +9,32 @@ using ObjCRuntime;
 
 using CreateObjectFlags = System.Runtime.InteropServices.ObjectiveC.CreateObjectFlags;
 
+using id = System.IntPtr;
+using Class = System.IntPtr;
+using SEL = System.IntPtr;
+using IMP = System.IntPtr;
+
 namespace MyConsoleApp
 {
     public sealed class MyWrappers : Wrappers
     {
         public static readonly Wrappers Instance = new MyWrappers();
 
-        protected override IntPtr ComputeInstanceClass(object instance, CreateInstanceFlags flags)
-            => Registrar.GetClass(instance.GetType()).value;
+        public static readonly Class noclass = new Class(0);
+        public static readonly id nil = new id(0);
+        public static readonly SEL nosel = new SEL(0);
 
-        [UnmanagedCallersOnly]
-        private unsafe static int ABI_IntBlock(BlockLiteral* b, int a)
-            => BlockLiteral.GetDelegate<IntBlock>(b)(a);
+        protected override Class ComputeInstanceClass(object instance, CreateInstanceFlags flags)
+            => Registrar.GetClass(instance.GetType());
 
-        protected override IntPtr GetBlockInvokeAndSignature(Delegate del, CreateBlockFlags flags, out string signature)
+        protected override IMP GetBlockInvokeAndSignature(Delegate del, CreateBlockFlags flags, out string signature)
         {
             if (del is IntBlock)
             {
                 signature = "i?i";
                 unsafe
                 {
-                    return (IntPtr)(delegate* unmanaged<BlockLiteral*, int, int>)&ABI_IntBlock;
+                    return (IMP)(delegate* unmanaged<BlockLiteral*, int, int>)&Trampolines.ABI_IntBlock;
                 }
             }
 
@@ -59,7 +63,7 @@ namespace MyConsoleApp
         }
     }
 
-    public static class Registrar
+    internal static class Registrar
     {
         public delegate object FactoryFunc(id instance, CreateObjectFlags flags);
 
@@ -115,7 +119,7 @@ namespace MyConsoleApp
 
         public static void RegisterClass(Type type, Class klass, FactoryFunc factory)
         {
-            if (klass == xm.noclass)
+            if (klass == MyWrappers.noclass)
             {
                 throw new Exception("Invalid native class");
             }
@@ -136,9 +140,30 @@ namespace MyConsoleApp
         }
     }
 
+    // Generated for supported Block types
+    internal static class Trampolines
+    {
+        public static IntBlock CreateIntBlock(BlockDispatch dispatch)
+        {
+            return new IntBlock((int a) =>
+            {
+                unsafe
+                {
+                    return ((delegate* unmanaged[Cdecl]<id, int, int>)dispatch.Invoker)(dispatch.Block, a);
+                }
+            });
+        }
+
+
+        [UnmanagedCallersOnly]
+        public unsafe static int ABI_IntBlock(BlockLiteral* b, int a)
+            => BlockLiteral.GetDelegate<IntBlock>(b)(a);
+    }
+
     // Base type for all Objective-C types.
     class NSObject
     {
+        protected enum Aggregate { _ };
         protected readonly id instance;
 
         /// <summary>
@@ -155,7 +180,7 @@ namespace MyConsoleApp
         /// <param name="instance"></param>
         public NSObject(id instance)
         {
-            MyWrappers.Instance.GetOrRegisterObjectForInstance(instance.value, CreateObjectFlags.None, this);
+            MyWrappers.Instance.GetOrRegisterObjectForInstance(instance, CreateObjectFlags.None, this);
             this.instance = instance;
         }
 
@@ -163,27 +188,13 @@ namespace MyConsoleApp
         /// Called for instantiating Objective-C types in .NET.
         /// </summary>
         /// <param name="klass"></param>
-        protected NSObject(Class klass)
+        protected NSObject(Class klass, Aggregate _)
             : this(xm.class_createInstance(klass, extraBytes: 0))
         {
         }
     }
 
     public delegate int IntBlock(int a);
-
-    internal static class Trampolines
-    {
-        public static IntBlock CreateIntBlock(BlockDispatch dispatch)
-        {
-            return new IntBlock((int a) =>
-            {
-                unsafe
-                {
-                    return ((delegate* unmanaged[Cdecl]<IntPtr, int, int>)dispatch.Invoker)(dispatch.Block, a);
-                }
-            });
-        }
-    }
 
     // Projected Objective-C type into .NET
     class TestObjC : NSObject
@@ -200,6 +211,9 @@ namespace MyConsoleApp
         private static readonly SEL GetIntBlockPropStaticSelector;
         private static readonly SEL SetIntBlockPropStaticSelector;
 
+        private static readonly SEL RetainSelector;
+        private static readonly SEL ReleaseSelector;
+
         unsafe static TestObjC()
         {
             ClassType = Registrar.GetClass(typeof(TestObjC));
@@ -212,6 +226,9 @@ namespace MyConsoleApp
             SetIntBlockPropSelector = xm.sel_registerName("setIntBlockProp:");
             GetIntBlockPropStaticSelector = xm.sel_registerName("intBlockPropStatic");
             SetIntBlockPropStaticSelector = xm.sel_registerName("setIntBlockPropStatic:");
+
+            RetainSelector = xm.sel_registerName("retain");
+            ReleaseSelector = xm.sel_registerName("release");
         }
 
         public static IntBlock IntBlockPropStatic
@@ -221,14 +238,14 @@ namespace MyConsoleApp
                 unsafe
                 {
                     id block = ((delegate* unmanaged<Class, SEL, id>)xm.objc_msgSend_Raw)(ClassType, GetIntBlockPropStaticSelector);
-                    if (block.value == xm.nil)
+                    if (block == MyWrappers.nil)
                     {
                         return null;
                     }
 
                     return (IntBlock)MyWrappers.Instance.GetOrCreateDelegateForBlock(
-                        block.value,
-                        CreateDelegateFlags.Unwrap,
+                        block,
+                        CreateDelegateFlags.Copy | CreateDelegateFlags.Unwrap,
                         Trampolines.CreateIntBlock);
                 }
             }
@@ -255,7 +272,7 @@ namespace MyConsoleApp
         }
 
         public TestObjC()
-            : base(ClassType)
+            : base(ClassType, Aggregate._)
         { }
 
         internal TestObjC(id instance)
@@ -268,16 +285,17 @@ namespace MyConsoleApp
             {
                 unsafe
                 {
-                    // [TODO] How to handle the autorelease signal from the compiler generated property?
+                    // [TODO] Handle the autorelease signal from the compiler generated property. At present
+                    // this represents an extra 'retain' call that must be released.
                     id block = ((delegate* unmanaged<id, SEL, id>)xm.objc_msgSend_Raw)(this.instance, GetIntBlockPropSelector);
-                    if (block.value == xm.nil)
+                    if (block == MyWrappers.nil)
                     {
                         return null;
                     }
 
                     return (IntBlock)MyWrappers.Instance.GetOrCreateDelegateForBlock(
-                        block.value,
-                        CreateDelegateFlags.Unwrap,
+                        block,
+                        CreateDelegateFlags.Copy | CreateDelegateFlags.Unwrap,
                         Trampolines.CreateIntBlock);
                 }
             }
@@ -331,13 +349,13 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                IntPtr id_dn = default;
+                id id_dn = default;
                 if (dn != null)
                 {
                     id_dn = MyWrappers.Instance.GetOrCreateInstanceForObject(dn, CreateInstanceFlags.Unwrap);
                 }
 
-                ((delegate* unmanaged<id, SEL, IntPtr, void>)xm.objc_msgSend_Raw)(this.instance, UseTestDotNetSelector, id_dn);
+                ((delegate* unmanaged<id, SEL, id, void>)xm.objc_msgSend_Raw)(this.instance, UseTestDotNetSelector, id_dn);
             }
         }
     }
@@ -373,11 +391,11 @@ namespace MyConsoleApp
 
             {
                 SEL GetIntBlockPropSelector = xm.sel_registerName("intBlockProp");
-                var getImpl = (IMP)(delegate* unmanaged<id, SEL, IntPtr>)&GetIntBlockPropProxy;
+                var getImpl = (IMP)(delegate* unmanaged<id, SEL, id>)&GetIntBlockPropProxy;
                 xm.class_addMethod(ClassType, GetIntBlockPropSelector, getImpl, "?@:");
 
                 SEL SetIntBlockPropSelector = xm.sel_registerName("setIntBlockProp:");
-                var setImpl = (IMP)(delegate* unmanaged<id, SEL, IntPtr, void>)&SetIntBlockPropProxy;
+                var setImpl = (IMP)(delegate* unmanaged<id, SEL, id, void>)&SetIntBlockPropProxy;
                 xm.class_addMethod(ClassType, SetIntBlockPropSelector, setImpl, "v@:?");
             }
 
@@ -386,8 +404,8 @@ namespace MyConsoleApp
                 SEL retainSelector = xm.sel_registerName("retain");
                 SEL releaseSelector = xm.sel_registerName("release");
                 Wrappers.GetRetainReleaseMethods(out IntPtr retainImpl, out IntPtr releaseImpl);
-                xm.class_addMethod(ClassType, retainSelector, new IMP(retainImpl), ":@:");
-                xm.class_addMethod(ClassType, releaseSelector, new IMP(releaseImpl), "v@:");
+                xm.class_addMethod(ClassType, retainSelector, retainImpl, ":@:");
+                xm.class_addMethod(ClassType, releaseSelector, releaseImpl, "v@:");
             }
 
             // Register the type with the Objective-C runtime.
@@ -400,7 +418,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self.value);
+                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self);
                 Trace.WriteLine($"DoubleFloatProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
                 return managed.DoubleFloat(a);
             }
@@ -411,7 +429,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self.value);
+                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self);
                 Trace.WriteLine($"DoubleDoubleProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
                 return managed.DoubleDouble(a);
             }
@@ -422,7 +440,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self.value);
+                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self);
                 Trace.WriteLine($"GetIntBlockPropProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
 
                 BlockLiteral block = MyWrappers.Instance.CreateBlockForDelegate(managed.IntBlockProp, CreateBlockFlags.None);
@@ -441,12 +459,12 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self.value);
+                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self);
                 Trace.WriteLine($"SetIntBlockPropProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
 
                 managed.IntBlockProp = (IntBlock)MyWrappers.Instance.GetOrCreateDelegateForBlock(
                     blk,
-                    CreateDelegateFlags.Unwrap,
+                    CreateDelegateFlags.Copy | CreateDelegateFlags.Unwrap,
                     Trampolines.CreateIntBlock);
             }
         }

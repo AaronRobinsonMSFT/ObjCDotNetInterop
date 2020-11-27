@@ -51,6 +51,11 @@ namespace System.Runtime.InteropServices.ObjectiveC
         None,
 
         /// <summary>
+        /// Create a copy of the supplied Block if used.
+        /// </summary>
+        Copy,
+
+        /// <summary>
         /// The supplied Objective-C block should be check if it is a
         /// wrapped Delegate and not a pure Objective-C Block.
         ///
@@ -212,13 +217,13 @@ namespace System.Runtime.InteropServices.ObjectiveC
                 IntPtr klass = this.ComputeInstanceClass(instance, flags);
 
                 // Add a lifetime size for the GC Handle.
-                wrapper = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime)).value;
+                wrapper = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime));
 
                 var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(wrapper);
                 IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
                 Trace.WriteLine($"Object: Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
                 lifetime->GCHandle = gcptr;
-                lifetime->RefCount = 1;
+                lifetime->RefCount = 0;
             }
 
             Internals.RegisterIdentity(instance, wrapper, RuntimeOrigin.DotNet);
@@ -375,6 +380,11 @@ namespace System.Runtime.InteropServices.ObjectiveC
             BlockDispatch dispatch;
             unsafe
             {
+                if (flags.HasFlag(CreateDelegateFlags.Copy))
+                {
+                    block = (IntPtr)xm.Block_copy((void*)block);
+                }
+
                 var blockLiteral = (BlockLiteral*)block;
                 dispatch = new BlockDispatch()
                 {
@@ -387,7 +397,9 @@ namespace System.Runtime.InteropServices.ObjectiveC
             // invoke the Block.
             Delegate wrappedBlock = createDelegate(dispatch);
 
-            // [TODO] Register for block release (i.e. Block_release).
+            // [TODO] Register for block release (i.e. Block_release). Since the Delegate
+            // is extending the lifetime of the Block, how does it know when and how to
+            // release the Block (i.e. on UI thread).
             Internals.RegisterIdentity(wrappedBlock, block, RuntimeOrigin.ObjectiveC);
             return wrappedBlock;
         }
@@ -477,6 +489,8 @@ namespace System.Runtime.InteropServices.ObjectiveC
             {
                 uint count = Interlocked.Increment(ref blockSrc->Lifetime->RefCount);
                 Debug.Assert(count != 1);
+
+                Console.WriteLine($"** Block copy: {(long)blockDescSrc:x}, Count: {count}");
             }
 
             blockDst->BlockDescriptor = blockDescSrc;
@@ -502,6 +516,12 @@ namespace System.Runtime.InteropServices.ObjectiveC
             {
                 uint count = Interlocked.Decrement(ref block.Lifetime->RefCount);
                 Debug.Assert(count != uint.MaxValue);
+
+                Console.WriteLine($"** Block dispose: {(long)blockDesc:x}, Count: {count}");
+                if (count == 0)
+                {
+                    Console.WriteLine($"** Weak reference: {(long)blockDesc:x}");
+                }
 
                 block.Lifetime = null;
             }

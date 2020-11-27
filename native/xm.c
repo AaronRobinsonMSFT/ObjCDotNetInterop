@@ -109,7 +109,8 @@ typedef struct
 static id clr_retain(id self, SEL sel)
 {
     ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
-    atomic_fetch_add(&lifetime->refCount, 1);
+    (void)atomic_fetch_add(&lifetime->refCount, 1);
+    printf("** Retain: %p, Count: %zd\n", (void*)self, lifetime->refCount);
     return self;
 }
 
@@ -117,8 +118,9 @@ static void clr_release(id self, SEL sel)
 {
     ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
     (void)atomic_fetch_sub(&lifetime->refCount, 1);
+    printf("** Release: %p, Count: %zd\n", (void*)self, lifetime->refCount);
     if (!lifetime->refCount)
-        printf("Destroyed: %p\n", (void*)self);
+        printf("** Weak reference: %p\n", (void*)self);
 }
 
 void* Get_clr_retain()
@@ -233,26 +235,6 @@ void Block_release_proxy(id block)
 {
     _Block_release(block);
 }
-
-// namespace
-// {
-//     template<typename Ret, typename ...ArgN>
-//     Ret objc_msgSend_Typed(id self, SEL sel, ArgN ...args)
-//     {
-//         // The objc_msgSend prototype is intentionally declared incorrectly to
-//         // avoid misuse. We can use C++ templates to compute the appropriate signature.
-//         // See https://developer.apple.com/documentation/objectivec/1456712-objc_msgsend?language=objc
-//         // See https://www.mikeash.com/pyblog/objc_msgsends-new-prototype.html
-//         using callsig_t = Ret(*)(id, SEL, ArgN...);
-//         return ((callsig_t)objc_msgSend)(self, sel, args...);
-//     }
-// }
-//
-// extern "C" id objc_msgSend_int_proxy(id self, SEL sel, int a)
-// {
-//     self = objc_msgSend_Typed<id>(self, sel, a);
-//     return self;
-// }
 
 void objc_msgSend_proxy(id self, SEL sel)
 {

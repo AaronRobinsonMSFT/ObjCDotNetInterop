@@ -73,6 +73,8 @@ static intBlock _intBlockPropStatic;
     int b;
     intBlock blk;
 
+    [dn retain];
+
     @autoreleasepool {
         blk = dn.intBlockProp;
         if (blk != nil) {
@@ -91,5 +93,7 @@ static intBlock _intBlockPropStatic;
             printf("Called TestDotNet.intBlockProp(%d) = %d\n", a, b);
         }
     }
+
+    [dn release];
 }
 @end
