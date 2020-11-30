@@ -21,6 +21,10 @@ typedef int (^intBlock)(int);
 - (float)doubleFloat: (float)a;
 - (double)doubleDouble: (double)a;
 
+- (void)sayHello1;
+- (void)sayHello2;
+- (void)callHellos:(TestObjC*) to;
+
 - (void)useProperties;
 - (void)useTestDotNet:(TestDotNet*) dn;
 @end
@@ -48,6 +52,18 @@ static intBlock _intBlockPropStatic;
 {
     //NSLog(@"doubleDouble: %lf", a);
     return a * 2.;
+}
+- (void)sayHello1 {
+    const char* className = [NSStringFromClass([self class]) UTF8String];
+    printf("TestObjC: 'Hello.1 from %s'\n", className);
+}
+- (void)sayHello2 {
+    const char* className = [NSStringFromClass([self class]) UTF8String];
+    printf("TestObjC: 'Hello.2 from %s'\n", className);
+}
+- (void)callHellos:(TestObjC*) to {
+    [to sayHello1];
+    [to sayHello2];
 }
 - (void)useProperties {
     int a = 13;

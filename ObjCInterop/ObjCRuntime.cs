@@ -35,6 +35,11 @@ namespace ObjCRuntime
         [DllImport(nameof(xm))]
         private extern static void* Get_objc_msgSend();
 
+        public static readonly void* objc_msgSendSuper_Raw = Get_objc_msgSendSuper();
+
+        [DllImport(nameof(xm))]
+        private extern static void* Get_objc_msgSendSuper();
+
         public static readonly void* _NSConcreteStackBlock_Raw = Get_NSConcreteStackBlock();
 
         [DllImport(nameof(xm))]

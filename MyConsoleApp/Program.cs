@@ -167,9 +167,9 @@ namespace MyConsoleApp
         protected readonly id instance;
 
         /// <summary>
-        /// Called for .NET types projected into Objective-C.
+        /// Called for NObject instance projected into Objective-C.
         /// </summary>
-        public NSObject()
+        internal NSObject()
         {
             this.instance = MyWrappers.Instance.GetOrCreateInstanceForObject(this, CreateInstanceFlags.None);
         }
@@ -192,6 +192,13 @@ namespace MyConsoleApp
             : this(xm.class_createInstance(klass, extraBytes: 0))
         {
         }
+
+        /// <summary>
+        /// Called for instantiating a .NET class inheriting from NObject.
+        /// </summary>
+        protected NSObject(Aggregate _)
+            : this()
+        { }
     }
 
     public delegate int IntBlock(int a);
@@ -199,10 +206,12 @@ namespace MyConsoleApp
     // Projected Objective-C type into .NET
     class TestObjC : NSObject
     {
-
         private static readonly Class ClassType;
         private static readonly SEL DoubleFloatSelector;
         private static readonly SEL DoubleDoubleSelector;
+        private static readonly SEL SayHello1Selector;
+        private static readonly SEL SayHello2Selector;
+        private static readonly SEL CallHellosSelector;
         private static readonly SEL UsePropertiesSelector;
         private static readonly SEL UseTestDotNetSelector;
 
@@ -219,6 +228,9 @@ namespace MyConsoleApp
             ClassType = Registrar.GetClass(typeof(TestObjC));
             DoubleFloatSelector = xm.sel_registerName("doubleFloat:");
             DoubleDoubleSelector = xm.sel_registerName("doubleDouble:");
+            SayHello1Selector = xm.sel_registerName("sayHello1");
+            SayHello2Selector = xm.sel_registerName("sayHello2");
+            CallHellosSelector = xm.sel_registerName("callHellos:");
             UsePropertiesSelector = xm.sel_registerName("useProperties");
             UseTestDotNetSelector = xm.sel_registerName("useTestDotNet:");
 
@@ -271,9 +283,31 @@ namespace MyConsoleApp
             }
         }
 
+        // Used to handle inheritance
+        private id localInstance;
+        private unsafe readonly void* msgSendFlavor = xm.objc_msgSend_Raw;
+
         public TestObjC()
             : base(ClassType, Aggregate._)
-        { }
+        {
+            this.localInstance = this.instance;
+        }
+
+        protected TestObjC(Aggregate _)
+        {
+            unsafe
+            {
+                // https://developer.apple.com/documentation/objectivec/1456716-objc_msgsendsuper
+                this.msgSendFlavor = xm.objc_msgSendSuper_Raw;
+
+                // https://developer.apple.com/documentation/objectivec/objc_super
+                // [TODO] Managed allocated memory for objc_super data structure.
+                var super = (IntPtr*)Marshal.AllocCoTaskMem(sizeof(id) + sizeof(Class));
+                super[0] = this.instance;
+                super[1] = ClassType;
+                this.localInstance = (id)super;
+            }
+        }
 
         internal TestObjC(id instance)
             : base(instance)
@@ -287,7 +321,7 @@ namespace MyConsoleApp
                 {
                     // [TODO] Handle the autorelease signal from the compiler generated property. At present
                     // this represents an extra 'retain' call that must be released.
-                    id block = ((delegate* unmanaged<id, SEL, id>)xm.objc_msgSend_Raw)(this.instance, GetIntBlockPropSelector);
+                    id block = ((delegate* unmanaged<id, SEL, id>)this.msgSendFlavor)(this.localInstance, GetIntBlockPropSelector);
                     if (block == MyWrappers.nil)
                     {
                         return null;
@@ -311,7 +345,7 @@ namespace MyConsoleApp
                         blockRaw = &block;
                     }
 
-                    ((delegate* unmanaged<id, SEL, BlockLiteral*, void>)xm.objc_msgSend_Raw)(this.instance, SetIntBlockPropSelector, blockRaw);
+                    ((delegate* unmanaged<id, SEL, BlockLiteral*, void>)this.msgSendFlavor)(this.localInstance, SetIntBlockPropSelector, blockRaw);
 
                     if (blockRaw != null)
                     {
@@ -325,7 +359,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                return ((delegate* unmanaged<id, SEL, float, float>)xm.objc_msgSend_Raw)(this.instance, DoubleFloatSelector, a);
+                return ((delegate* unmanaged<id, SEL, float, float>)this.msgSendFlavor)(this.localInstance, DoubleFloatSelector, a);
             }
         }
 
@@ -333,7 +367,37 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                return ((delegate* unmanaged<id, SEL, double, double>)xm.objc_msgSend_Raw)(this.instance, DoubleDoubleSelector, a);
+                return ((delegate* unmanaged<id, SEL, double, double>)this.msgSendFlavor)(this.localInstance, DoubleDoubleSelector, a);
+            }
+        }
+
+        public void SayHello1()
+        {
+            unsafe
+            {
+                ((delegate* unmanaged<id, SEL, void>)this.msgSendFlavor)(this.localInstance, SayHello1Selector);
+            }
+        }
+
+        public void SayHello2()
+        {
+            unsafe
+            {
+                ((delegate* unmanaged<id, SEL, void>)this.msgSendFlavor)(this.localInstance, SayHello2Selector);
+            }
+        }
+
+        public void CallHellos(TestObjC to)
+        {
+            unsafe
+            {
+                id id_to = default;
+                if (to != null)
+                {
+                    id_to = MyWrappers.Instance.GetOrCreateInstanceForObject(to, CreateInstanceFlags.Unwrap);
+                }
+
+                ((delegate* unmanaged<id, SEL, id, void>)this.msgSendFlavor)(this.localInstance, CallHellosSelector, id_to);
             }
         }
 
@@ -341,7 +405,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                ((delegate* unmanaged<id, SEL, void>)xm.objc_msgSend_Raw)(this.instance, UsePropertiesSelector);
+                ((delegate* unmanaged<id, SEL, void>)this.msgSendFlavor)(this.localInstance, UsePropertiesSelector);
             }
         }
 
@@ -355,8 +419,86 @@ namespace MyConsoleApp
                     id_dn = MyWrappers.Instance.GetOrCreateInstanceForObject(dn, CreateInstanceFlags.Unwrap);
                 }
 
-                ((delegate* unmanaged<id, SEL, id, void>)xm.objc_msgSend_Raw)(this.instance, UseTestDotNetSelector, id_dn);
+                ((delegate* unmanaged<id, SEL, id, void>)this.msgSendFlavor)(this.localInstance, UseTestDotNetSelector, id_dn);
             }
+        }
+    }
+
+    class ExtendTestObjC : TestObjC
+    {
+        private static readonly Class ClassType;
+
+        unsafe static ExtendTestObjC()
+        {
+            // Create the class.
+            Class baseClass = Registrar.GetClass(typeof(TestObjC));
+            ClassType = xm.objc_allocateClassPair(baseClass, nameof(ExtendTestObjC), 0);
+            Registrar.RegisterClass(
+                typeof(ExtendTestObjC),
+                ClassType,
+                (id inst, CreateObjectFlags flags) => throw new NotImplementedException());
+
+            // Register and define the class's methods.
+
+            {
+                SEL SayHello1Selector = xm.sel_registerName("sayHello1");
+                var impl = (IMP)(delegate* unmanaged<id, SEL, void>)&SayHello1;
+                xm.class_addMethod(ClassType, SayHello1Selector, impl, "v@:");
+            }
+
+            {
+                SEL SayHello2Selector = xm.sel_registerName("sayHello2");
+                var impl = (IMP)(delegate* unmanaged<id, SEL, void>)&SayHello2;
+                xm.class_addMethod(ClassType, SayHello2Selector, impl, "v@:");
+            }
+
+            // Override the retain/release methods for memory management.
+            {
+                SEL retainSelector = xm.sel_registerName("retain");
+                SEL releaseSelector = xm.sel_registerName("release");
+                Wrappers.GetRetainReleaseMethods(out IntPtr retainImpl, out IntPtr releaseImpl);
+                xm.class_addMethod(ClassType, retainSelector, retainImpl, ":@:");
+                xm.class_addMethod(ClassType, releaseSelector, releaseImpl, "v@:");
+            }
+
+            // Register the type with the Objective-C runtime.
+            xm.objc_registerClassPair(ClassType);
+        }
+
+        [UnmanagedCallersOnly]
+        private static void SayHello1(id self, SEL sel)
+        {
+            unsafe
+            {
+                ExtendTestObjC managed = Instance.GetInstance<ExtendTestObjC>((Instance*)self);
+                Trace.WriteLine($"SayHello1 = Self: {self} (Obj: {managed}), SEL: {sel}");
+                managed.SayHello1();
+            }
+        }
+
+        [UnmanagedCallersOnly]
+        private static void SayHello2(id self, SEL sel)
+        {
+            unsafe
+            {
+                ExtendTestObjC managed = Instance.GetInstance<ExtendTestObjC>((Instance*)self);
+                Trace.WriteLine($"SayHello2 = Self: {self} (Obj: {managed}), SEL: {sel}");
+                managed.SayHello2();
+            }
+        }
+
+        public ExtendTestObjC()
+            : base(Aggregate._)
+        { }
+
+        public new void SayHello1()
+        {
+            Console.WriteLine($"{nameof(ExtendTestObjC)}: 'Hello.1 from {this.GetType().Name}'");
+        }
+
+        public new void SayHello2()
+        {
+            base.SayHello2();
         }
     }
 
@@ -412,7 +554,6 @@ namespace MyConsoleApp
             xm.objc_registerClassPair(ClassType);
         }
 
-
         [UnmanagedCallersOnly]
         private static float DoubleFloatProxy(id self, SEL sel, float a)
         {
@@ -446,7 +587,7 @@ namespace MyConsoleApp
                 BlockLiteral block = MyWrappers.Instance.CreateBlockForDelegate(managed.IntBlockProp, CreateBlockFlags.None);
 
                 // [TODO] Getters typically do a retain followed by an autorelease call. It isn't obvious if
-                // a Block_copy() call is appropriate, but it would seem to be given my curreny understanding.
+                // a Block_copy() call is appropriate, but it would seem to be given my current understanding.
                 void* newBlock = xm.Block_copy(&block);
                 MyWrappers.Instance.ReleaseBlockLiteral(ref block);
 
@@ -470,6 +611,7 @@ namespace MyConsoleApp
         }
 
         public TestDotNet()
+            : base(Aggregate._)
         { }
 
         public IntBlock IntBlockProp
@@ -507,6 +649,12 @@ namespace MyConsoleApp
             Console.WriteLine($"DoubleFloat: {testObjC.DoubleFloat((float)Math.PI)}");
             Console.WriteLine($"DoubleDouble: {testObjC.DoubleDouble(Math.PI)}");
 
+            // Call functions from .NET subclass of Objective-C class.
+            var extendTestObjC = new ExtendTestObjC();
+            extendTestObjC.SayHello1();
+            extendTestObjC.SayHello2();
+            testObjC.CallHellos(extendTestObjC);
+
             // Roundtrip Delegate <=> Block
             testObjC.IntBlockProp = (int a) => { return a * 2; };
             Console.WriteLine($"IntBlockProp: {testObjC.IntBlockProp((int)Math.PI)}");
@@ -518,7 +666,7 @@ namespace MyConsoleApp
             // Use delegates in Objective-C
             testObjC.UseProperties();
 
-            // Pass over .NET object and use
+            // Pass over .NET object and use properties
             var testDotNet = new TestDotNet();
             testDotNet.IntBlockProp = (int a) => { return a * 2; };
             testObjC.UseTestDotNet(testDotNet);

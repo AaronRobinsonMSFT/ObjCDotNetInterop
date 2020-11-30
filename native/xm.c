@@ -148,6 +148,11 @@ void* Get_objc_msgSend()
     return (void*)&objc_msgSend;
 }
 
+void* Get_objc_msgSendSuper()
+{
+    return (void*)&objc_msgSendSuper;
+}
+
 // Forward declare the needed stack block class.
 extern void* _NSConcreteStackBlock;
 
