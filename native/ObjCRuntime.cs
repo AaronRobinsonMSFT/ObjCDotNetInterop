@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 namespace ObjCRuntime
 {
     // Objective-C runtime and .NET runtime APIs.
-    public unsafe class xm
+    internal unsafe class xm
     {
         [DllImport(nameof(xm))]
         public extern static void Initialize();
@@ -56,6 +56,9 @@ namespace ObjCRuntime
         [DllImport(nameof(xm), EntryPoint = "object_getClassName_proxy")]
         [return: MarshalAs(UnmanagedType.LPStr)]
         public extern static string object_getClassName(IntPtr obj);
+
+        [DllImport(nameof(xm), EntryPoint = "object_getClass_proxy")]
+        public extern static IntPtr object_getClass(IntPtr obj);
 
         [DllImport(nameof(xm), EntryPoint = "objc_allocateClassPair_proxy")]
         public extern static IntPtr objc_allocateClassPair(

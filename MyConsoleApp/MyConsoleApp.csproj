@@ -5,6 +5,11 @@
     <TargetFramework>net5.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\native\ObjCRuntime.cs">
+      <Link>ObjCRuntime.cs</Link>
+    </Compile>
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../ObjCInterop/ObjCInterop.csproj" />

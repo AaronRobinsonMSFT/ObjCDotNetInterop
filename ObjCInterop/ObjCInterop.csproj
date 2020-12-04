@@ -5,4 +5,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Include="..\native\ObjCRuntime.cs">
+      <Link>ObjCRuntime.cs</Link>
+    </Compile>
+  </ItemGroup>
 </Project>

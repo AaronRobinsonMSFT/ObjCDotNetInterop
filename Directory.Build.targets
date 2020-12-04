@@ -21,7 +21,8 @@
       <ObjCCompilerArgs Condition="'$(EnableARC)' == 'false'">$(ObjCCompilerArgs) -fno-objc-arc</ObjCCompilerArgs>
     </PropertyGroup>
 
-    <Exec Command="clang -std=c99 -Wall -Wno-unused-function -framework Foundation -g -fpic -shared $(ObjCCompilerArgs) -o &quot;$(OutputPath)libxm.dylib&quot; $(NativeRoot)objc_types.m $(NativeRoot)xm.c" />
+    <Exec Command="clang -std=c99 -Wall -Wno-unused-function -framework Foundation -g -fpic -shared $(ObjCCompilerArgs) -o &quot;$(OutputPath)libxm.dylib&quot; $(NativeRoot)objc_types.m $(NativeRoot)xm.c"
+          ConsoleToMsBuild="true"/>
   </Target>
 
 </Project>
