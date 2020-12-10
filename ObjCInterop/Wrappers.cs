@@ -261,13 +261,16 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <see cref="CreateObject(IntPtr, CreateObjectFlags)"/>
         public object GetOrCreateObjectForInstance(IntPtr instance, CreateObjectFlags flags)
         {
-            object wrapper;
-            if (flags.HasFlag(CreateObjectFlags.Unwrap)
-                && Internals.TryGetObject(instance, RuntimeOrigin.DotNet, out wrapper))
+            if (flags.HasFlag(CreateObjectFlags.Unwrap) && xm.clr_isRuntimeAllocated(instance))
             {
-                return wrapper;
+                unsafe
+                {
+                    var instPtr = (Instance*)instance.ToPointer();
+                    return Instance.GetInstance<object>(instPtr);
+                }
             }
 
+            object wrapper;
             if (Internals.TryGetObject(instance, RuntimeOrigin.ObjectiveC, out wrapper))
             {
                 return wrapper;
@@ -316,10 +319,13 @@ namespace System.Runtime.InteropServices.ObjectiveC
             }
             else
             {
-                if (flags.HasFlag(CreateObjectFlags.Unwrap)
-                    && Internals.TryGetObject(instance, RuntimeOrigin.DotNet, out wrapper))
+                if (flags.HasFlag(CreateObjectFlags.Unwrap) && xm.clr_isRuntimeAllocated(instance))
                 {
-                    return wrapper;
+                    unsafe
+                    {
+                        var instPtr = (Instance*)instance.ToPointer();
+                        return Instance.GetInstance<object>(instPtr);
+                    }
                 }
 
                 if (Internals.TryGetObject(instance, RuntimeOrigin.ObjectiveC, out wrapper))

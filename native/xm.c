@@ -68,33 +68,6 @@ void Initialize()
     //printf("long int: (%zd) bytes\n", sizeof(long int));
 }
 
-enum type_t
-{
-    type_now = 1, // Native object
-    type_mow = 2, // Managed object
-};
-
-static void cleanup_callback(enum type_t type, void* value)
-{
-    printf("cleanup_callback: %d - 0x%zx\n", type, (size_t)value);
-}
-
-
-static void* store_default(enum type_t type, void* value)
-{
-    printf("store_default: %d - 0x%zx\n", type, (size_t)value);
-    return NULL;
-}
-
-typedef void* (*store_value_t)(enum type_t type, void* value);
-static store_value_t g_store = &store_default;
-
-void* runtime_handshake(store_value_t st)
-{
-    g_store = st;
-    return &cleanup_callback;
-}
-
 void dummy(void* ptr)
 {
     debug_inst(ptr);
@@ -105,6 +78,26 @@ typedef struct
     size_t gcHandle;
     atomic_size_t refCount;
 } ManagedObjectWrapperLifetime;
+
+static size_t ClrWeakRefSentinel = 0;
+static size_t DeallocSentinel = 1;
+static size_t ObjCWeakRefSentinel = 2;
+
+// Called by GC to determine if lifetime is rooted (i.e. strong reference).
+static bool is_rooted(id self)
+{
+    ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
+
+    if (lifetime->refCount == ObjCWeakRefSentinel)
+    {
+        printf("** Objective-C weak reference: %p\n", (void*)self);
+        SEL autorelease_sel = sel_registerName("autorelease");
+        ((void(*)(id, SEL))objc_msgSend)(self, autorelease_sel);
+    }
+
+    // If the ref count isn't the CLR weak ref sentinel, then the instance is rooted.
+    return (lifetime->refCount != ClrWeakRefSentinel);
+}
 
 static id clr_retain(id self, SEL sel)
 {
@@ -117,17 +110,18 @@ static id clr_retain(id self, SEL sel)
 static void clr_release(id self, SEL sel)
 {
     ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
-    (void)atomic_fetch_sub(&lifetime->refCount, 1);
-    printf("** Release: %p, Count: %zd\n", (void*)self, lifetime->refCount);
-    if (lifetime->refCount == 0)
+    assert(lifetime->refCount != ClrWeakRefSentinel);
+
+    atomic_size_t prevCount = atomic_fetch_sub(&lifetime->refCount, 1);
+    if (lifetime->refCount == DeallocSentinel)
     {
+        assert(prevCount == ObjCWeakRefSentinel);
+        printf("** Dealloc: %p\n", (void*)self);
         SEL dealloc_sel = sel_registerName("dealloc");
-        ((void(*)(id, SEL))objc_msgSend)(self,dealloc_sel);
+        ((void(*)(id, SEL))objc_msgSend)(self, dealloc_sel);
     }
-    else if (lifetime->refCount == 1)
-    {
-        printf("** Weak reference: %p\n", (void*)self);
-    }
+
+    printf("** Release: %p, Prev: %zd, Count: %zd\n", (void*)self, prevCount, lifetime->refCount);
 }
 
 static void clr_dealloc(id self, SEL sel)
@@ -138,9 +132,10 @@ static void clr_dealloc(id self, SEL sel)
     struct objc_super super;
     super.receiver = self;
     super.super_class = class_getSuperclass(object_getClass(self));
-    ((void(*)(struct objc_super*, SEL))objc_msgSendSuper)(&super,sel);
+    ((void(*)(struct objc_super*, SEL))objc_msgSendSuper)(&super, sel);
 
-    // Clean up the lifetime object.
+    printf("** CLR weak reference: %p\n", (void*)self);
+    lifetime->refCount = ClrWeakRefSentinel;
 }
 
 void* Get_clr_retain()
@@ -166,6 +161,16 @@ void clr_SetGlobalMessageSendCallbacks(
     void* fptr_objc_msgSendSuper_stret)
 {
     // Provided overrides to send to CLR.
+}
+
+// Get the supplied object's dealloc implementation
+bool clr_isRuntimeAllocated(id obj)
+{
+    Class cls = object_getClass(obj);
+    SEL dealloc_sel = sel_registerName("dealloc");
+    Method method = class_getInstanceMethod(cls, dealloc_sel);
+    IMP impl = method_getImplementation(method);
+    return ((void*)impl == (void*)clr_dealloc);
 }
 
 void* Get_objc_msgSend()

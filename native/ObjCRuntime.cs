@@ -35,6 +35,10 @@ namespace ObjCRuntime
             IntPtr objc_msgSendSuper,
             IntPtr objc_msgSendSuper_stret);
 
+        [DllImport(nameof(xm))]
+        [return: MarshalAs(UnmanagedType.U1)]
+        public extern static bool clr_isRuntimeAllocated(IntPtr obj);
+
         public static readonly void* objc_msgSend_Raw = Get_objc_msgSend();
 
         [DllImport(nameof(xm))]
