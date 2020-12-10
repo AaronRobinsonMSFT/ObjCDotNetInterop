@@ -37,6 +37,17 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// instead of creating a new wrapper.
         /// </summary>
         Unwrap,
+
+        /// <summary>
+        /// Used to indicate the Objective-C instance was created as a wrapper
+        /// for the supplied managed object and should be initialized.
+        /// </summary>
+        ObjectInit,
+
+        /// <summary>
+        /// Let the .NET runtime participate in lifetime management.
+        /// </summary>
+        ManageLifetime,
     }
 
     [Flags]
@@ -49,11 +60,6 @@ namespace System.Runtime.InteropServices.ObjectiveC
     public enum CreateDelegateFlags
     {
         None,
-
-        /// <summary>
-        /// Create a copy of the supplied Block if used.
-        /// </summary>
-        Copy,
 
         /// <summary>
         /// The supplied Objective-C block should be check if it is a
@@ -218,16 +224,20 @@ namespace System.Runtime.InteropServices.ObjectiveC
 
                 // Add a lifetime size for the GC Handle.
                 wrapper = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime));
-
-                var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(wrapper);
-                IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
-                Trace.WriteLine($"Object: Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
-                lifetime->GCHandle = gcptr;
-                lifetime->RefCount = 0;
+                InitWrapper(wrapper, instance);
             }
 
             Internals.RegisterIdentity(instance, wrapper, RuntimeOrigin.DotNet);
             return wrapper;
+        }
+
+        private unsafe static void InitWrapper(IntPtr wrapper, object instance)
+        {
+            var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(wrapper);
+            IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
+            Trace.WriteLine($"Object: Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
+            lifetime->GCHandle = gcptr;
+            lifetime->RefCount = 0;
         }
 
         /// <summary>
@@ -264,8 +274,19 @@ namespace System.Runtime.InteropServices.ObjectiveC
             }
 
             wrapper = this.CreateObject(instance, flags);
+
+            // [TODO] Handle wrapper lifetime
             Internals.RegisterIdentity(wrapper, instance, RuntimeOrigin.ObjectiveC);
             return wrapper;
+        }
+
+        /// <summary>
+        /// Separate the object wrapper from the underlying Objective-C instance.
+        /// </summary>
+        /// <param name="wrapper">Managed wrapper</param>
+        public void SeparateObjectFromInstance(object wrapper)
+        {
+            Internals.UnregisterObjectWrapper(wrapper);
         }
 
         /// <summary>
@@ -285,18 +306,31 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <returns>A managed wrapper</returns>
         public object GetOrRegisterObjectForInstance(IntPtr instance, CreateObjectFlags flags, object wrapperMaybe)
         {
+            var origin = RuntimeOrigin.ObjectiveC;
+
             object wrapper;
-            if (flags.HasFlag(CreateObjectFlags.Unwrap)
-                && Internals.TryGetObject(instance, RuntimeOrigin.DotNet, out wrapper))
+            if (flags.HasFlag(CreateObjectFlags.ObjectInit))
             {
-                return wrapper;
+                InitWrapper(instance, wrapperMaybe);
+                origin = RuntimeOrigin.DotNet;
+            }
+            else
+            {
+                if (flags.HasFlag(CreateObjectFlags.Unwrap)
+                    && Internals.TryGetObject(instance, RuntimeOrigin.DotNet, out wrapper))
+                {
+                    return wrapper;
+                }
+
+                if (Internals.TryGetObject(instance, RuntimeOrigin.ObjectiveC, out wrapper))
+                {
+                    return wrapper;
+                }
             }
 
-            if (!Internals.TryGetObject(instance, RuntimeOrigin.ObjectiveC, out wrapper))
-            {
-                Internals.RegisterIdentity(wrapperMaybe, instance, RuntimeOrigin.ObjectiveC);
-                wrapper = wrapperMaybe;
-            }
+            // [TODO] Handle wrapper lifetime
+            Internals.RegisterIdentity(wrapperMaybe, instance, origin);
+            wrapper = wrapperMaybe;
 
             return wrapper;
         }
@@ -359,11 +393,10 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <returns>A Delegate</returns>
         public Delegate GetOrCreateDelegateForBlock(IntPtr block, CreateDelegateFlags flags, CreateDelegate createDelegate)
         {
-            Delegate registeredDelegate;
             if (flags.HasFlag(CreateDelegateFlags.Unwrap))
             {
                 // Check if block is a wrapper for an actual delegate.
-                if (TryInspectInstanceAsDelegateWrapper(block, out registeredDelegate))
+                if (TryInspectInstanceAsDelegateWrapper(block, out Delegate registeredDelegate))
                 {
                     return registeredDelegate;
                 }
@@ -380,10 +413,9 @@ namespace System.Runtime.InteropServices.ObjectiveC
             BlockDispatch dispatch;
             unsafe
             {
-                if (flags.HasFlag(CreateDelegateFlags.Copy))
-                {
-                    block = (IntPtr)xm.Block_copy((void*)block);
-                }
+                // [TODO] Handle cleanup if the below factory function throws
+                // an exception.
+                block = (IntPtr)xm.Block_copy((void*)block);
 
                 var blockLiteral = (BlockLiteral*)block;
                 dispatch = new BlockDispatch()
@@ -439,25 +471,39 @@ namespace System.Runtime.InteropServices.ObjectiveC
             out IntPtr objc_msgSendSuper_stret);
 
         /// <summary>
-        /// Get the retain and release implementations that should be added
-        /// to all managed type definitions that are projected into the
-        /// Objective-C environment.
+        /// Get the lifetime and memory management functions for all managed
+        /// type definitions that are projected into the Objective-C environment.
         /// </summary>
+        /// <param name="allocImpl">Alloc implementation</param>
+        /// <param name="deallocImpl">Dealloc implementation</param>
         /// <param name="retainImpl">Retain implementation</param>
         /// <param name="releaseImpl">Release implementation</param>
         /// <remarks>
+        /// See <see href="https://developer.apple.com/documentation/objectivec/nsobject/1571958-alloc">alloc</see>.
+        /// See <see href="https://developer.apple.com/documentation/objectivec/nsobject/1571947-dealloc">dealloc</see>.
         /// See <see href="https://developer.apple.com/documentation/objectivec/1418956-nsobject/1571946-retain">retain</see>.
         /// See <see href="https://developer.apple.com/documentation/objectivec/1418956-nsobject/1571957-release">release</see>.
         /// </remarks>
-        public static void GetRetainReleaseMethods(
+        public static void GetLifetimeMethods(
+            out IntPtr allocImpl,
+            out IntPtr deallocImpl,
             out IntPtr retainImpl,
             out IntPtr releaseImpl)
         {
             unsafe
             {
-                retainImpl = (nint)xm.clr_retain_Raw;
-                releaseImpl = (nint)xm.clr_release_Raw;
+                allocImpl = (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr>)&AllocProxy;
+                deallocImpl = (IntPtr)xm.clr_dealloc_Raw;
+                retainImpl = (IntPtr)xm.clr_retain_Raw;
+                releaseImpl = (IntPtr)xm.clr_release_Raw;
             }
+        }
+
+        [UnmanagedCallersOnly]
+        private unsafe static IntPtr AllocProxy(IntPtr cls, IntPtr sel)
+        {
+            IntPtr new_id = xm.class_createInstance(cls, sizeof(ManagedObjectWrapperLifetime));
+            return new_id;
         }
 
         /// <summary>
@@ -598,8 +644,9 @@ namespace System.Runtime.InteropServices.ObjectiveC
             {
                 var block = (BlockLiteral*)blockWrapperMaybe;
 
-                // First check if the flags we set are present.
-                if ((block->Flags & DotNetBlockLiteralFlags) != DotNetBlockLiteralFlags)
+                // First check if the flags we set are present and the size is correct.
+                if ((block->Flags & DotNetBlockLiteralFlags) != DotNetBlockLiteralFlags
+                    || block->BlockDescriptor->Size != sizeof(BlockLiteral))
                 {
                     return false;
                 }
@@ -619,6 +666,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
                 // At this point we know this is a block we created. Therefore, we can
                 // use our internal fields on the BlockLiteral data structure to get
                 // at the underlying managed object.
+                Debug.Assert(block->BlockDescriptor->Size == sizeof(BlockLiteral));
                 Debug.Assert(block->Lifetime->RefCount > 0);
                 del = (Delegate)GCHandle.FromIntPtr(block->Lifetime->GCHandle).Target;
                 return true;
@@ -655,6 +703,22 @@ namespace System.Runtime.InteropServices.ObjectiveC
                         ObjectToIdentity_ObjectiveC.Add(managed, native);
                         IdentityToObject_ObjectiveC.Add(native, managed);
                     }
+                }
+                finally
+                {
+                    RegisteredIdentityLock.ExitWriteLock();
+                }
+            }
+            public static void UnregisterObjectWrapper(object wrapper)
+            {
+                RegisteredIdentityLock.EnterWriteLock();
+
+                try
+                {
+                    IntPtr native = ObjectToIdentity_ObjectiveC[wrapper];
+
+                    ObjectToIdentity_ObjectiveC.Remove(wrapper);
+                    IdentityToObject_ObjectiveC.Remove(native);
                 }
                 finally
                 {

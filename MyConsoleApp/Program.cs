@@ -154,7 +154,6 @@ namespace MyConsoleApp
             });
         }
 
-
         [UnmanagedCallersOnly]
         public unsafe static int ABI_IntBlock(BlockLiteral* b, int a)
             => BlockLiteral.GetDelegate<IntBlock>(b)(a);
@@ -175,13 +174,12 @@ namespace MyConsoleApp
         }
 
         /// <summary>
-        /// Called for existing Objective-C types entering .NET.
+        /// Called for existing Objective-C instances entering .NET.
         /// </summary>
         /// <param name="instance"></param>
         public NSObject(id instance)
+            : this(instance, CreateObjectFlags.None)
         {
-            MyWrappers.Instance.GetOrRegisterObjectForInstance(instance, CreateObjectFlags.None, this);
-            this.instance = instance;
         }
 
         /// <summary>
@@ -189,16 +187,20 @@ namespace MyConsoleApp
         /// </summary>
         /// <param name="klass"></param>
         protected NSObject(Class klass, Aggregate _)
-            : this(xm.class_createInstance(klass, extraBytes: 0))
+            : this(xm.class_createInstance(klass, extraBytes: 0), CreateObjectFlags.None)
         {
         }
 
         /// <summary>
-        /// Called for instantiating a .NET class inheriting from NObject.
+        /// Called for existing Objective-C instances entering .NET.
         /// </summary>
-        protected NSObject(Aggregate _)
-            : this()
-        { }
+        /// <param name="instance"></param>
+        /// <param name="flags"></param>
+        protected NSObject(id instance, CreateObjectFlags flags)
+        {
+            MyWrappers.Instance.GetOrRegisterObjectForInstance(instance, flags, this);
+            this.instance = instance;
+        }
     }
 
     public delegate int IntBlock(int a);
@@ -257,7 +259,7 @@ namespace MyConsoleApp
 
                     return (IntBlock)MyWrappers.Instance.GetOrCreateDelegateForBlock(
                         block,
-                        CreateDelegateFlags.Copy | CreateDelegateFlags.Unwrap,
+                        CreateDelegateFlags.Unwrap,
                         Trampolines.CreateIntBlock);
                 }
             }
@@ -304,13 +306,13 @@ namespace MyConsoleApp
                 // [TODO] Managed allocated memory for objc_super data structure.
                 var super = (IntPtr*)Marshal.AllocCoTaskMem(sizeof(id) + sizeof(Class));
                 super[0] = this.instance;
-                super[1] = ClassType;
+                super[1] = ClassType; // During aggregation supply this class as the "super".
                 this.localInstance = (id)super;
             }
         }
 
         internal TestObjC(id instance)
-            : base(instance)
+            : base(instance, CreateObjectFlags.None)
         { }
 
         public IntBlock IntBlockProp
@@ -329,7 +331,7 @@ namespace MyConsoleApp
 
                     return (IntBlock)MyWrappers.Instance.GetOrCreateDelegateForBlock(
                         block,
-                        CreateDelegateFlags.Copy | CreateDelegateFlags.Unwrap,
+                        CreateDelegateFlags.Unwrap,
                         Trampolines.CreateIntBlock);
                 }
             }
@@ -422,6 +424,11 @@ namespace MyConsoleApp
                 ((delegate* unmanaged<id, SEL, id, void>)this.msgSendFlavor)(this.localInstance, UseTestDotNetSelector, id_dn);
             }
         }
+
+        public void CalledDuringDealloc()
+        {
+            throw new NotSupportedException("Not projected into managed");
+        }
     }
 
     class ExtendTestObjC : TestObjC
@@ -452,11 +459,26 @@ namespace MyConsoleApp
                 xm.class_addMethod(ClassType, SayHello2Selector, impl, "v@:");
             }
 
-            // Override the retain/release methods for memory management.
             {
+                SEL CalledDuringDeallocSelector = xm.sel_registerName("calledDuringDealloc");
+                var impl = (IMP)(delegate* unmanaged<id, SEL, void>)&CalledDuringDealloc;
+                xm.class_addMethod(ClassType, CalledDuringDeallocSelector, impl, "v@:");
+            }
+
+            // Override default lifetime/memory management methods.
+            {
+                Wrappers.GetLifetimeMethods(out IntPtr allocImpl, out IntPtr deallocImpl, out IntPtr retainImpl, out IntPtr releaseImpl);
+
+                // Static methods
+                id metaClass = xm.object_getClass(ClassType);
+                SEL AllocSelector = xm.sel_registerName("alloc");
+                xm.class_addMethod(metaClass, AllocSelector, allocImpl, ":@:");
+
+                // Instance methods
+                SEL deallocSelector = xm.sel_registerName("dealloc");
+                xm.class_addMethod(ClassType, deallocSelector, deallocImpl, "v@:");
                 SEL retainSelector = xm.sel_registerName("retain");
                 SEL releaseSelector = xm.sel_registerName("release");
-                Wrappers.GetRetainReleaseMethods(out IntPtr retainImpl, out IntPtr releaseImpl);
                 xm.class_addMethod(ClassType, retainSelector, retainImpl, ":@:");
                 xm.class_addMethod(ClassType, releaseSelector, releaseImpl, "v@:");
             }
@@ -487,6 +509,17 @@ namespace MyConsoleApp
             }
         }
 
+        [UnmanagedCallersOnly]
+        private static void CalledDuringDealloc(id self, SEL sel)
+        {
+            unsafe
+            {
+                ExtendTestObjC managed = Instance.GetInstance<ExtendTestObjC>((Instance*)self);
+                Trace.WriteLine($"CalledDuringDealloc = Self: {self} (Obj: {managed}), SEL: {sel}");
+                managed.CalledDuringDealloc();
+            }
+        }
+
         public ExtendTestObjC()
             : base(Aggregate._)
         { }
@@ -499,6 +532,11 @@ namespace MyConsoleApp
         public new void SayHello2()
         {
             base.SayHello2();
+        }
+
+        public new void CalledDuringDealloc()
+        {
+            Console.WriteLine("ExtendTestObjC.calledDuringDealloc");
         }
     }
 
@@ -518,6 +556,12 @@ namespace MyConsoleApp
                 (id inst, CreateObjectFlags flags) => throw new NotImplementedException());
 
             // Register and define the class's methods.
+
+            {
+                SEL InitSelector = xm.sel_registerName("init");
+                var impl = (IMP)(delegate* unmanaged<id, SEL, id>)&InitProxy;
+                xm.class_addMethod(ClassType, InitSelector, impl, ":@:");
+            }
 
             {
                 SEL DoubleFloatSelector = xm.sel_registerName("doubleFloat:");
@@ -541,17 +585,34 @@ namespace MyConsoleApp
                 xm.class_addMethod(ClassType, SetIntBlockPropSelector, setImpl, "v@:?");
             }
 
-            // Override the retain/release methods for memory management.
+            // Override default lifetime/memory management methods.
             {
+                Wrappers.GetLifetimeMethods(out IntPtr allocImpl, out IntPtr deallocImpl, out IntPtr retainImpl, out IntPtr releaseImpl);
+
+                // Static methods
+                id metaClass = xm.object_getClass(ClassType);
+                SEL AllocSelector = xm.sel_registerName("alloc");
+                xm.class_addMethod(metaClass, AllocSelector, allocImpl, ":@:");
+
+                // Instance methods
+                SEL deallocSelector = xm.sel_registerName("dealloc");
+                xm.class_addMethod(ClassType, deallocSelector, deallocImpl, "v@:");
                 SEL retainSelector = xm.sel_registerName("retain");
                 SEL releaseSelector = xm.sel_registerName("release");
-                Wrappers.GetRetainReleaseMethods(out IntPtr retainImpl, out IntPtr releaseImpl);
                 xm.class_addMethod(ClassType, retainSelector, retainImpl, ":@:");
                 xm.class_addMethod(ClassType, releaseSelector, releaseImpl, "v@:");
             }
 
             // Register the type with the Objective-C runtime.
             xm.objc_registerClassPair(ClassType);
+        }
+
+        [UnmanagedCallersOnly]
+        private static id InitProxy(id self, SEL sel)
+        {
+            // N.B. The registration mapping is performed in the NSObject constructor.
+            var dn = new TestDotNet(self);
+            return self;
         }
 
         [UnmanagedCallersOnly]
@@ -584,7 +645,13 @@ namespace MyConsoleApp
                 TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self);
                 Trace.WriteLine($"GetIntBlockPropProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
 
-                BlockLiteral block = MyWrappers.Instance.CreateBlockForDelegate(managed.IntBlockProp, CreateBlockFlags.None);
+                var intBlock = managed.IntBlockProp;
+                if (intBlock == null)
+                {
+                    return default(IntPtr);
+                }
+
+                BlockLiteral block = MyWrappers.Instance.CreateBlockForDelegate(intBlock, CreateBlockFlags.None);
 
                 // [TODO] Getters typically do a retain followed by an autorelease call. It isn't obvious if
                 // a Block_copy() call is appropriate, but it would seem to be given my current understanding.
@@ -605,13 +672,17 @@ namespace MyConsoleApp
 
                 managed.IntBlockProp = (IntBlock)MyWrappers.Instance.GetOrCreateDelegateForBlock(
                     blk,
-                    CreateDelegateFlags.Copy | CreateDelegateFlags.Unwrap,
+                    CreateDelegateFlags.Unwrap,
                     Trampolines.CreateIntBlock);
             }
         }
 
         public TestDotNet()
-            : base(Aggregate._)
+            : base()
+        { }
+
+        protected TestDotNet(id instance)
+            : base(instance, CreateObjectFlags.ObjectInit)
         { }
 
         public IntBlock IntBlockProp
@@ -674,6 +745,8 @@ namespace MyConsoleApp
             // Clean up
             testObjC.IntBlockProp = null;
             TestObjC.IntBlockPropStatic = null;
+
+            testObjC.UseTestDotNet(null);
         }
     }
 }

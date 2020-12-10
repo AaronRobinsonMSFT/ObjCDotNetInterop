@@ -1,4 +1,5 @@
 
+#include <objc/runtime.h>
 #import <Foundation/Foundation.h>
 
 typedef int (^intBlock)(int);
@@ -17,6 +18,9 @@ typedef int (^intBlock)(int);
 
 @property (copy, class) intBlock intBlockPropStatic;
 @property (copy) intBlock intBlockProp;
+
+- (void)dealloc;
+- (void)calledDuringDealloc;
 
 - (float)doubleFloat: (float)a;
 - (double)doubleDouble: (double)a;
@@ -44,6 +48,15 @@ static intBlock _intBlockPropStatic;
     }
 }
 
+- (void)dealloc {
+    [self calledDuringDealloc];
+    [super dealloc];
+    printf("Leaving TestObjC.dealloc\n");
+}
+- (void)calledDuringDealloc {
+    printf("TestObjC.calledDuringDealloc\n");
+}
+
 - (float)doubleFloat: (float)a {
     //NSLog(@"doubleFloat: %f", a);
     return a * 2.;
@@ -62,8 +75,12 @@ static intBlock _intBlockPropStatic;
     printf("TestObjC: 'Hello.2 from %s'\n", className);
 }
 - (void)callHellos:(TestObjC*) to {
-    [to sayHello1];
-    [to sayHello2];
+    @autoreleasepool {
+        [to retain];
+        [to sayHello1];
+        [to sayHello2];
+        [to autorelease];
+    }
 }
 - (void)useProperties {
     int a = 13;
@@ -89,7 +106,13 @@ static intBlock _intBlockPropStatic;
     int b;
     intBlock blk;
 
-    [dn retain];
+    if (dn == nil) {
+        Class Class_TestDotNet = objc_lookUpClass("TestDotNet");
+        //dn = [[Class_TestDotNet alloc] init];
+        dn = [Class_TestDotNet new];
+    } else {
+        [dn retain];
+    }
 
     @autoreleasepool {
         blk = dn.intBlockProp;

@@ -12,6 +12,11 @@ namespace ObjCRuntime
         [DllImport(nameof(xm))]
         public extern static void dummy(nint ptr);
 
+        public static readonly void* clr_dealloc_Raw = Get_clr_dealloc();
+
+        [DllImport(nameof(xm))]
+        private extern static void* Get_clr_dealloc();
+
         public static readonly void* clr_retain_Raw = Get_clr_retain();
 
         [DllImport(nameof(xm))]
@@ -59,6 +64,9 @@ namespace ObjCRuntime
 
         [DllImport(nameof(xm), EntryPoint = "object_getClass_proxy")]
         public extern static IntPtr object_getClass(IntPtr obj);
+
+        [DllImport(nameof(xm), EntryPoint = "class_getSuperclass_proxy")]
+        public extern static IntPtr class_getSuperclass(IntPtr cls);
 
         [DllImport(nameof(xm), EntryPoint = "objc_allocateClassPair_proxy")]
         public extern static IntPtr objc_allocateClassPair(

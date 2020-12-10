@@ -119,8 +119,28 @@ static void clr_release(id self, SEL sel)
     ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
     (void)atomic_fetch_sub(&lifetime->refCount, 1);
     printf("** Release: %p, Count: %zd\n", (void*)self, lifetime->refCount);
-    if (!lifetime->refCount)
+    if (lifetime->refCount == 0)
+    {
+        SEL dealloc_sel = sel_registerName("dealloc");
+        ((void(*)(id, SEL))objc_msgSend)(self,dealloc_sel);
+    }
+    else if (lifetime->refCount == 1)
+    {
         printf("** Weak reference: %p\n", (void*)self);
+    }
+}
+
+static void clr_dealloc(id self, SEL sel)
+{
+    ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
+    printf("** Dealloc: %p, Count: %zd\n", (void*)self, lifetime->refCount);
+
+    struct objc_super super;
+    super.receiver = self;
+    super.super_class = class_getSuperclass(object_getClass(self));
+    ((void(*)(struct objc_super*, SEL))objc_msgSendSuper)(&super,sel);
+
+    // Clean up the lifetime object.
 }
 
 void* Get_clr_retain()
@@ -131,6 +151,11 @@ void* Get_clr_retain()
 void* Get_clr_release()
 {
     return (void*)&clr_release;
+}
+
+void* Get_clr_dealloc()
+{
+    return (void*)&clr_dealloc;
 }
 
 void clr_SetGlobalMessageSendCallbacks(
@@ -177,6 +202,18 @@ const char* object_getClassName_proxy(id obj)
 {
     const char* name = object_getClassName(obj);
     return clr_strdup(name);
+}
+
+id object_getClass_proxy(id obj)
+{
+    id mc = object_getClass(obj);
+    return mc;
+}
+
+Class class_getSuperclass_proxy(Class cls)
+{
+    Class cls_super = class_getSuperclass(cls);
+    return cls_super;
 }
 
 Class objc_allocateClassPair_proxy(Class superclass, const char *name, size_t extraBytes)
