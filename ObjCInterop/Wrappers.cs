@@ -75,7 +75,8 @@ namespace System.Runtime.InteropServices.ObjectiveC
     internal struct ManagedObjectWrapperLifetime
     {
         public IntPtr GCHandle;
-        public uint RefCount;
+        public int RefCount;
+        public int Increment;
     }
 
     /// <summary>
@@ -93,8 +94,8 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <returns>The managed instance</returns>
         public unsafe static T GetInstance<T>(Instance* instancePtr) where T : class
         {
-            var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars((nint)instancePtr);
-            var gcHandle = GCHandle.FromIntPtr(lifetime->GCHandle);
+            var lifetimePtr = (ManagedObjectWrapperLifetime**)xm.object_getIndexedIvars((nint)instancePtr);
+            var gcHandle = GCHandle.FromIntPtr((*lifetimePtr)->GCHandle);
             return (T)gcHandle.Target;
         }
     }
@@ -221,9 +222,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
             unsafe
             {
                 IntPtr klass = this.ComputeInstanceClass(instance, flags);
-
-                // Add a lifetime size for the GC Handle.
-                wrapper = xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime));
+                wrapper = AllocateObjCInstance(klass);
                 InitWrapper(wrapper, instance);
             }
 
@@ -231,13 +230,25 @@ namespace System.Runtime.InteropServices.ObjectiveC
             return wrapper;
         }
 
+        private unsafe static IntPtr AllocateObjCInstance(IntPtr klass)
+        {
+            // Allocate additional memory for lifetime pointer.
+            return xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime*));
+        }
+
         private unsafe static void InitWrapper(IntPtr wrapper, object instance)
         {
-            var lifetime = (ManagedObjectWrapperLifetime*)xm.object_getIndexedIvars(wrapper);
+            var lifetime = (ManagedObjectWrapperLifetime*)Marshal.AllocCoTaskMem(sizeof(ManagedObjectWrapperLifetime));
             IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
             Trace.WriteLine($"Object: Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
+
+            // N.B. see details in xm.c regarding the ManagedObjectWrapperLifetime type.
             lifetime->GCHandle = gcptr;
-            lifetime->RefCount = 0;
+            lifetime->RefCount = 1;
+            lifetime->Increment = 1;
+
+            var lifetimePtr = (ManagedObjectWrapperLifetime**)xm.object_getIndexedIvars(wrapper);
+            *lifetimePtr = lifetime;
         }
 
         /// <summary>
@@ -508,7 +519,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         [UnmanagedCallersOnly]
         private unsafe static IntPtr AllocProxy(IntPtr cls, IntPtr sel)
         {
-            IntPtr new_id = xm.class_createInstance(cls, sizeof(ManagedObjectWrapperLifetime));
+            IntPtr new_id = AllocateObjCInstance(cls);
             return new_id;
         }
 
@@ -539,7 +550,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
 
             // Extend the lifetime of the delegate
             {
-                uint count = Interlocked.Increment(ref blockSrc->Lifetime->RefCount);
+                int count = Interlocked.Increment(ref blockSrc->Lifetime->RefCount);
                 Debug.Assert(count != 1);
 
                 Console.WriteLine($"** Block copy: {(long)blockDescSrc:x}, Count: {count}");
@@ -566,8 +577,8 @@ namespace System.Runtime.InteropServices.ObjectiveC
 
             // Decrement the ref count on the delegate
             {
-                uint count = Interlocked.Decrement(ref block.Lifetime->RefCount);
-                Debug.Assert(count != uint.MaxValue);
+                int count = Interlocked.Decrement(ref block.Lifetime->RefCount);
+                Debug.Assert(count != -1);
 
                 Console.WriteLine($"** Block dispose: {(long)blockDesc:x}, Count: {count}");
                 if (count == 0)
@@ -673,7 +684,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
                 // use our internal fields on the BlockLiteral data structure to get
                 // at the underlying managed object.
                 Debug.Assert(block->BlockDescriptor->Size == sizeof(BlockLiteral));
-                Debug.Assert(block->Lifetime->RefCount > 0);
+                Debug.Assert(block->Lifetime->RefCount != 0);
                 del = (Delegate)GCHandle.FromIntPtr(block->Lifetime->GCHandle).Target;
                 return true;
             }

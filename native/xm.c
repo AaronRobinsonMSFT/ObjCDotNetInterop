@@ -76,64 +76,92 @@ void dummy(void* ptr)
 typedef struct
 {
     size_t gcHandle;
-    atomic_size_t refCount;
+    atomic_int refCount;
+    int increment;
 } ManagedObjectWrapperLifetime;
 
-static size_t ClrWeakRefSentinel = 0;
-static size_t DeallocSentinel = 1;
-static size_t ObjCWeakRefSentinel = 2;
+static int NormalInc = 1;
+static int CleanupInc = -1;
+static int ObjCWeakRefSentinel = 1;
+static int ClrWeakRefSentinel = 0;
+static int DeallocSentinel = -1;
+static int CleanupSentinel = -2;
 
 // Called by GC to determine if lifetime is rooted (i.e. strong reference).
 static bool is_rooted(id self)
 {
-    ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
+    ManagedObjectWrapperLifetime* lifetime = *(ManagedObjectWrapperLifetime**)object_getIndexedIvars(self);
+
+    return (lifetime->refCount != ObjCWeakRefSentinel)
+        && (lifetime->refCount != ClrWeakRefSentinel);
+}
+
+// Called by GC to perform cheap finalization if possible.
+// i.e. GCToEEInterface::EagerFinalized
+static bool eager_finalize(id self)
+{
+    ManagedObjectWrapperLifetime* lifetime = *(ManagedObjectWrapperLifetime**)object_getIndexedIvars(self);
 
     if (lifetime->refCount == ObjCWeakRefSentinel)
     {
-        printf("** Objective-C weak reference: %p\n", (void*)self);
-        SEL autorelease_sel = sel_registerName("autorelease");
-        ((void(*)(id, SEL))objc_msgSend)(self, autorelease_sel);
-    }
+        assert(lifetime->increment == NormalInc);
 
-    // If the ref count isn't the CLR weak ref sentinel, then the instance is rooted.
-    return (lifetime->refCount != ClrWeakRefSentinel);
+        // Indicate start of clean up sequence.
+        lifetime->refCount = CleanupSentinel;
+        lifetime->increment = CleanupInc;
+
+        printf("** Autorelease: %p\n", (void*)self);
+        SEL dealloc_sel = sel_registerName("autorelease");
+        ((void(*)(id, SEL))objc_msgSend)(self, dealloc_sel);
+
+        return false;
+    }
+    else
+    {
+        assert(lifetime->refCount == ClrWeakRefSentinel);
+        // [TODO] Determine if the user actually wants the finalizer to run.
+        return true;
+    }
 }
 
 static id clr_retain(id self, SEL sel)
 {
-    ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
-    (void)atomic_fetch_add(&lifetime->refCount, 1);
-    printf("** Retain: %p, Count: %zd\n", (void*)self, lifetime->refCount);
+    ManagedObjectWrapperLifetime* lifetime = *(ManagedObjectWrapperLifetime**)object_getIndexedIvars(self);
+    (void)atomic_fetch_add(&lifetime->refCount, lifetime->increment);
+    printf("** Retain: %p, Count: %d\n", (void*)self, lifetime->refCount);
     return self;
 }
 
 static void clr_release(id self, SEL sel)
 {
-    ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
+    ManagedObjectWrapperLifetime* lifetime = *(ManagedObjectWrapperLifetime**)object_getIndexedIvars(self);
     assert(lifetime->refCount != ClrWeakRefSentinel);
 
-    atomic_size_t prevCount = atomic_fetch_sub(&lifetime->refCount, 1);
+    atomic_int prevCount = atomic_fetch_sub(&lifetime->refCount, lifetime->increment);
     if (lifetime->refCount == DeallocSentinel)
     {
-        assert(prevCount == ObjCWeakRefSentinel);
+        assert(prevCount == CleanupSentinel);
         printf("** Dealloc: %p\n", (void*)self);
         SEL dealloc_sel = sel_registerName("dealloc");
         ((void(*)(id, SEL))objc_msgSend)(self, dealloc_sel);
     }
 
-    printf("** Release: %p, Prev: %zd, Count: %zd\n", (void*)self, prevCount, lifetime->refCount);
+    printf("** Release: %p, Prev: %d, Count: %d\n", (void*)self, prevCount, lifetime->refCount);
 }
 
 static void clr_dealloc(id self, SEL sel)
 {
-    ManagedObjectWrapperLifetime* lifetime = (ManagedObjectWrapperLifetime*)object_getIndexedIvars(self);
-    printf("** Dealloc: %p, Count: %zd\n", (void*)self, lifetime->refCount);
+    ManagedObjectWrapperLifetime* lifetime = *(ManagedObjectWrapperLifetime**)object_getIndexedIvars(self);
+    printf("** Dealloc: %p, Count: %d\n", (void*)self, lifetime->refCount);
 
+    // The super dealloc may call back into the runtime and rely upon
+    // the manage object.
     struct objc_super super;
     super.receiver = self;
     super.super_class = class_getSuperclass(object_getClass(self));
     ((void(*)(struct objc_super*, SEL))objc_msgSendSuper)(&super, sel);
 
+    // N.B. The management of the lifetime memory is handled by the SyncBlock cleanup for the object.
     printf("** CLR weak reference: %p\n", (void*)self);
     lifetime->refCount = ClrWeakRefSentinel;
 }
