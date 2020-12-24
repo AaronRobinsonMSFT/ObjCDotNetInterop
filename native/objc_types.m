@@ -4,38 +4,33 @@
 
 typedef int (^intBlock)(int);
 
-@interface TestDotNet : NSObject {
-}
+@class DotNetObject;
 
-@property (copy) intBlock intBlockProp;
-
-- (float)doubleFloat: (float)a;
-- (double)doubleDouble: (double)a;
-@end
-
-@interface TestObjC : NSObject {
+@interface ObjCObject : NSObject {
 }
 
 @property (copy, class) intBlock intBlockPropStatic;
 @property (copy) intBlock intBlockProp;
 
-- (void)dealloc;
-- (void)calledDuringDealloc;
-
 - (float)doubleFloat: (float)a;
 - (double)doubleDouble: (double)a;
 
-- (void)sayHello1;
-- (void)sayHello2;
-- (void)callHellos:(TestObjC*) to;
-
 - (void)useProperties;
-- (void)useTestDotNet:(TestDotNet*) dn;
+- (void)useTestDotNet:(DotNetObject*) dn;
+@end
+
+@interface DotNetObject : ObjCObject {
+}
+
+@property (copy) intBlock intBlockProp;
+
+- (float)doubleFloat: (float)a;
+- (double)doubleDouble: (double)a;
 @end
 
 void dummy(id i);
 
-@implementation TestObjC
+@implementation ObjCObject
 
 static intBlock _intBlockPropStatic;
 + (intBlock)intBlockPropStatic {
@@ -66,22 +61,6 @@ static intBlock _intBlockPropStatic;
     //NSLog(@"doubleDouble: %lf", a);
     return a * 2.;
 }
-- (void)sayHello1 {
-    const char* className = [NSStringFromClass([self class]) UTF8String];
-    printf("TestObjC: 'Hello.1 from %s'\n", className);
-}
-- (void)sayHello2 {
-    const char* className = [NSStringFromClass([self class]) UTF8String];
-    printf("TestObjC: 'Hello.2 from %s'\n", className);
-}
-- (void)callHellos:(TestObjC*) to {
-    @autoreleasepool {
-        [to retain];
-        [to sayHello1];
-        [to sayHello2];
-        [to autorelease];
-    }
-}
 - (void)useProperties {
     int a = 13;
     int b;
@@ -94,20 +73,20 @@ static intBlock _intBlockPropStatic;
             printf("Called intBlockProp(%d) = %d\n", a, b);
         }
 
-        blk = TestObjC.intBlockPropStatic;
+        blk = ObjCObject.intBlockPropStatic;
         if (blk != nil) {
             b = blk(a);
             printf("Called intBlockPropStatic(%d) = %d\n", a, b);
         }
     }
 }
-- (void)useTestDotNet:(TestDotNet*) dn {
+- (void)useTestDotNet:(DotNetObject*) dn {
     int a = 13;
     int b;
     intBlock blk;
 
     if (dn == nil) {
-        Class Class_TestDotNet = objc_lookUpClass("TestDotNet");
+        Class Class_TestDotNet = objc_lookUpClass("DotNetObject");
         //dn = [[Class_TestDotNet alloc] init];
         dn = [Class_TestDotNet new];
     } else {
@@ -118,21 +97,21 @@ static intBlock _intBlockPropStatic;
         blk = dn.intBlockProp;
         if (blk != nil) {
             b = blk(a);
-            printf("Called TestDotNet.intBlockProp(%d) = %d\n", a, b);
+            printf("Called DotNetObject.intBlockProp(%d) = %d\n", a, b);
         }
 
         dn.intBlockProp = ^(int a) {
             return a * 4;
         };
-        printf("Set TestDotNet.intBlockProp\n");
+        printf("Set DotNetObject.intBlockProp\n");
 
         blk = dn.intBlockProp;
         if (blk != nil) {
             b = blk(a);
-            printf("Called TestDotNet.intBlockProp(%d) = %d\n", a, b);
+            printf("Called DotNetObject.intBlockProp(%d) = %d\n", a, b);
         }
     }
 
-    [dn release];
+    //[dn release];
 }
 @end

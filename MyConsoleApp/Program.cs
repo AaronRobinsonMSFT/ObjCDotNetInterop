@@ -24,9 +24,6 @@ namespace MyConsoleApp
         public static readonly id nil = new id(0);
         public static readonly SEL nosel = new SEL(0);
 
-        protected override Class ComputeInstanceClass(object instance, CreateInstanceFlags flags)
-            => Registrar.GetClass(instance.GetType());
-
         protected override IMP GetBlockInvokeAndSignature(Delegate del, CreateBlockFlags flags, out string signature)
         {
             if (del is IntBlock)
@@ -41,7 +38,7 @@ namespace MyConsoleApp
             throw new NotSupportedException();
         }
 
-        protected override object CreateObject(IntPtr instance, CreateObjectFlags flags)
+        protected override ObjectiveCBase CreateObject(IntPtr instance, CreateObjectFlags flags)
         {
             string className = xm.object_getClassName(instance);
             var factory = Registrar.GetFactory(className);
@@ -65,7 +62,7 @@ namespace MyConsoleApp
 
     internal static class Registrar
     {
-        public delegate object FactoryFunc(id instance, CreateObjectFlags flags);
+        public delegate ObjectiveCBase FactoryFunc(id instance, CreateObjectFlags flags);
 
         public static void Initialize((Type mt, string nt, FactoryFunc factory)[] typeMapping)
         {
@@ -160,53 +157,49 @@ namespace MyConsoleApp
     }
 
     // Base type for all Objective-C types.
-    class NSObject
+    class NSObject : ObjectiveCBase
     {
-        protected enum Aggregate { _ };
-        protected readonly id instance;
-
-        /// <summary>
-        /// Called for NObject instance projected into Objective-C.
-        /// </summary>
-        internal NSObject()
+        // Call to instantiate a new NSObject from managed code.
+        public NSObject()
+            : this(RegisterInstanceFlags.None, IntPtr.Zero)
         {
-            this.instance = MyWrappers.Instance.GetOrCreateInstanceForObject(this, CreateInstanceFlags.None);
+            Debug.Assert(this.instance != ObjectiveCBase.InvalidInstanceValue);
         }
 
-        /// <summary>
-        /// Called for existing Objective-C instances entering .NET.
-        /// </summary>
-        /// <param name="instance"></param>
-        public NSObject(id instance)
-            : this(instance, CreateObjectFlags.None)
+        // Call to instantiate a new NSObject based on an existing Objective-C instance.
+        internal NSObject(IntPtr instance)
+            : this(RegisterInstanceFlags.None, instance)
         {
         }
 
-        /// <summary>
-        /// Called for instantiating Objective-C types in .NET.
-        /// </summary>
-        /// <param name="klass"></param>
-        protected NSObject(Class klass, Aggregate _)
-            : this(xm.class_createInstance(klass, extraBytes: 0), CreateObjectFlags.None)
+        // Call from derived class to participate with instance registration.
+        protected NSObject(RegisterInstanceFlags flags, IntPtr instance)
         {
-        }
-
-        /// <summary>
-        /// Called for existing Objective-C instances entering .NET.
-        /// </summary>
-        /// <param name="instance"></param>
-        /// <param name="flags"></param>
-        protected NSObject(id instance, CreateObjectFlags flags)
-        {
-            MyWrappers.Instance.GetOrRegisterObjectForInstance(instance, flags, this);
             this.instance = instance;
+            if (this.instance == IntPtr.Zero)
+            {
+                this.instance = SendAllocMessage(this);
+            }
+
+            MyWrappers.Instance.RegisterInstanceWithObject(this.instance, this, flags);
+
+            static IntPtr SendAllocMessage(NSObject obj)
+            {
+                IntPtr klass = Registrar.GetClass(obj.GetType());
+                unsafe
+                {
+                    // [Class alloc]
+                    var allocSelector = xm.sel_registerName("alloc");
+                    return ((delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr>)xm.objc_msgSend_Raw)(klass, allocSelector, klass);
+                }
+            }
         }
     }
 
     public delegate int IntBlock(int a);
 
     // Projected Objective-C type into .NET
-    class TestObjC : NSObject
+    class ObjCObject : NSObject
     {
         private static readonly Class ClassType;
         private static readonly SEL DoubleFloatSelector;
@@ -225,9 +218,9 @@ namespace MyConsoleApp
         private static readonly SEL RetainSelector;
         private static readonly SEL ReleaseSelector;
 
-        unsafe static TestObjC()
+        unsafe static ObjCObject()
         {
-            ClassType = Registrar.GetClass(typeof(TestObjC));
+            ClassType = Registrar.GetClass(typeof(ObjCObject));
             DoubleFloatSelector = xm.sel_registerName("doubleFloat:");
             DoubleDoubleSelector = xm.sel_registerName("doubleDouble:");
             SayHello1Selector = xm.sel_registerName("sayHello1");
@@ -289,33 +282,39 @@ namespace MyConsoleApp
         private id localInstance;
         private unsafe readonly void* msgSendFlavor = xm.objc_msgSend_Raw;
 
-        public TestObjC()
-            : base(ClassType, Aggregate._)
+        public ObjCObject()
+            : this(RegisterInstanceFlags.None, IntPtr.Zero)
         {
             this.localInstance = this.instance;
         }
 
-        protected TestObjC(Aggregate _)
-        {
-            unsafe
-            {
-                // https://developer.apple.com/documentation/objectivec/1456716-objc_msgsendsuper
-                this.msgSendFlavor = xm.objc_msgSendSuper_Raw;
+        internal ObjCObject(id instance)
+            : this(RegisterInstanceFlags.None, instance)
+        { }
 
-                // https://developer.apple.com/documentation/objectivec/objc_super
-                // [TODO] Managed allocated memory for objc_super data structure.
-                var super = (IntPtr*)Marshal.AllocCoTaskMem(sizeof(id) + sizeof(Class));
-                super[0] = this.instance;
-                super[1] = ClassType; // During aggregation supply this class as the "super".
-                this.localInstance = (id)super;
+        protected ObjCObject(RegisterInstanceFlags flags, IntPtr instance)
+            : base(flags, instance)
+        {
+            this.localInstance = this.instance;
+
+            if (flags.HasFlag(RegisterInstanceFlags.ManagedDefinition))
+            {
+                unsafe
+                {
+                    // https://developer.apple.com/documentation/objectivec/1456716-objc_msgsendsuper
+                    this.msgSendFlavor = xm.objc_msgSendSuper_Raw;
+
+                    // https://developer.apple.com/documentation/objectivec/objc_super
+                    // [TODO] Managed allocated memory for objc_super data structure.
+                    var super = (IntPtr*)Marshal.AllocCoTaskMem(sizeof(id) + sizeof(Class));
+                    super[0] = this.instance;
+                    super[1] = ClassType; // During aggregation supply this class as the "super".
+                    this.localInstance = (id)super;
+                }
             }
         }
 
-        internal TestObjC(id instance)
-            : base(instance, CreateObjectFlags.None)
-        { }
-
-        public IntBlock IntBlockProp
+        public virtual IntBlock IntBlockProp
         {
             get
             {
@@ -357,7 +356,7 @@ namespace MyConsoleApp
             }
         }
 
-        public float DoubleFloat(float a)
+        public virtual float DoubleFloat(float a)
         {
             unsafe
             {
@@ -365,41 +364,11 @@ namespace MyConsoleApp
             }
         }
 
-        public double DoubleDouble(double a)
+        public virtual double DoubleDouble(double a)
         {
             unsafe
             {
                 return ((delegate* unmanaged<id, SEL, double, double>)this.msgSendFlavor)(this.localInstance, DoubleDoubleSelector, a);
-            }
-        }
-
-        public void SayHello1()
-        {
-            unsafe
-            {
-                ((delegate* unmanaged<id, SEL, void>)this.msgSendFlavor)(this.localInstance, SayHello1Selector);
-            }
-        }
-
-        public void SayHello2()
-        {
-            unsafe
-            {
-                ((delegate* unmanaged<id, SEL, void>)this.msgSendFlavor)(this.localInstance, SayHello2Selector);
-            }
-        }
-
-        public void CallHellos(TestObjC to)
-        {
-            unsafe
-            {
-                id id_to = default;
-                if (to != null)
-                {
-                    id_to = MyWrappers.Instance.GetOrCreateInstanceForObject(to, CreateInstanceFlags.Unwrap);
-                }
-
-                ((delegate* unmanaged<id, SEL, id, void>)this.msgSendFlavor)(this.localInstance, CallHellosSelector, id_to);
             }
         }
 
@@ -411,14 +380,14 @@ namespace MyConsoleApp
             }
         }
 
-        public void UseTestDotNet(TestDotNet dn)
+        public void UseTestDotNet(DotNetObject dn)
         {
             unsafe
             {
                 id id_dn = default;
                 if (dn != null)
                 {
-                    id_dn = MyWrappers.Instance.GetOrCreateInstanceForObject(dn, CreateInstanceFlags.Unwrap);
+                    id_dn = MyWrappers.Instance.GetInstanceFromObject(dn);
                 }
 
                 ((delegate* unmanaged<id, SEL, id, void>)this.msgSendFlavor)(this.localInstance, UseTestDotNetSelector, id_dn);
@@ -431,127 +400,18 @@ namespace MyConsoleApp
         }
     }
 
-    class ExtendTestObjC : TestObjC
-    {
-        private static readonly Class ClassType;
-
-        unsafe static ExtendTestObjC()
-        {
-            // Create the class.
-            Class baseClass = Registrar.GetClass(typeof(TestObjC));
-            ClassType = xm.objc_allocateClassPair(baseClass, nameof(ExtendTestObjC), 0);
-            Registrar.RegisterClass(
-                typeof(ExtendTestObjC),
-                ClassType,
-                (id inst, CreateObjectFlags flags) => throw new NotImplementedException());
-
-            // Register and define the class's methods.
-
-            {
-                SEL SayHello1Selector = xm.sel_registerName("sayHello1");
-                var impl = (IMP)(delegate* unmanaged<id, SEL, void>)&SayHello1;
-                xm.class_addMethod(ClassType, SayHello1Selector, impl, "v@:");
-            }
-
-            {
-                SEL SayHello2Selector = xm.sel_registerName("sayHello2");
-                var impl = (IMP)(delegate* unmanaged<id, SEL, void>)&SayHello2;
-                xm.class_addMethod(ClassType, SayHello2Selector, impl, "v@:");
-            }
-
-            {
-                SEL CalledDuringDeallocSelector = xm.sel_registerName("calledDuringDealloc");
-                var impl = (IMP)(delegate* unmanaged<id, SEL, void>)&CalledDuringDealloc;
-                xm.class_addMethod(ClassType, CalledDuringDeallocSelector, impl, "v@:");
-            }
-
-            // Override default lifetime/memory management methods.
-            {
-                Wrappers.GetLifetimeMethods(out IntPtr allocImpl, out IntPtr deallocImpl, out IntPtr retainImpl, out IntPtr releaseImpl);
-
-                // Static methods
-                id metaClass = xm.object_getClass(ClassType);
-                SEL AllocSelector = xm.sel_registerName("alloc");
-                xm.class_addMethod(metaClass, AllocSelector, allocImpl, ":@:");
-
-                // Instance methods
-                SEL deallocSelector = xm.sel_registerName("dealloc");
-                xm.class_addMethod(ClassType, deallocSelector, deallocImpl, "v@:");
-                SEL retainSelector = xm.sel_registerName("retain");
-                SEL releaseSelector = xm.sel_registerName("release");
-                xm.class_addMethod(ClassType, retainSelector, retainImpl, ":@:");
-                xm.class_addMethod(ClassType, releaseSelector, releaseImpl, "v@:");
-            }
-
-            // Register the type with the Objective-C runtime.
-            xm.objc_registerClassPair(ClassType);
-        }
-
-        [UnmanagedCallersOnly]
-        private static void SayHello1(id self, SEL sel)
-        {
-            unsafe
-            {
-                ExtendTestObjC managed = Instance.GetInstance<ExtendTestObjC>((Instance*)self);
-                Trace.WriteLine($"SayHello1 = Self: {self} (Obj: {managed}), SEL: {sel}");
-                managed.SayHello1();
-            }
-        }
-
-        [UnmanagedCallersOnly]
-        private static void SayHello2(id self, SEL sel)
-        {
-            unsafe
-            {
-                ExtendTestObjC managed = Instance.GetInstance<ExtendTestObjC>((Instance*)self);
-                Trace.WriteLine($"SayHello2 = Self: {self} (Obj: {managed}), SEL: {sel}");
-                managed.SayHello2();
-            }
-        }
-
-        [UnmanagedCallersOnly]
-        private static void CalledDuringDealloc(id self, SEL sel)
-        {
-            unsafe
-            {
-                ExtendTestObjC managed = Instance.GetInstance<ExtendTestObjC>((Instance*)self);
-                Trace.WriteLine($"CalledDuringDealloc = Self: {self} (Obj: {managed}), SEL: {sel}");
-                managed.CalledDuringDealloc();
-            }
-        }
-
-        public ExtendTestObjC()
-            : base(Aggregate._)
-        { }
-
-        public new void SayHello1()
-        {
-            Console.WriteLine($"{nameof(ExtendTestObjC)}: 'Hello.1 from {this.GetType().Name}'");
-        }
-
-        public new void SayHello2()
-        {
-            base.SayHello2();
-        }
-
-        public new void CalledDuringDealloc()
-        {
-            Console.WriteLine("ExtendTestObjC.calledDuringDealloc");
-        }
-    }
-
     // Implemented dotnet type projected into Objective-C
-    class TestDotNet : NSObject
+    class DotNetObject : ObjCObject
     {
         private static readonly Class ClassType;
 
-        unsafe static TestDotNet()
+        unsafe static DotNetObject()
         {
             // Create the class.
             Class baseClass = Registrar.GetClass(typeof(NSObject));
-            ClassType = xm.objc_allocateClassPair(baseClass, nameof(TestDotNet), 0);
+            ClassType = xm.objc_allocateClassPair(baseClass, nameof(DotNetObject), 0);
             Registrar.RegisterClass(
-                typeof(TestDotNet),
+                typeof(DotNetObject),
                 ClassType,
                 (id inst, CreateObjectFlags flags) => throw new NotImplementedException());
 
@@ -611,8 +471,8 @@ namespace MyConsoleApp
         private static id InitProxy(id self, SEL sel)
         {
             // N.B. The registration mapping is performed in the NSObject constructor.
-            var dn = new TestDotNet(self);
-            return self;
+            var dn = new DotNetObject(self);
+            return dn.instance;
         }
 
         [UnmanagedCallersOnly]
@@ -620,7 +480,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self);
+                DotNetObject managed = Instance.GetInstance<DotNetObject>((Instance*)self);
                 Trace.WriteLine($"DoubleFloatProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
                 return managed.DoubleFloat(a);
             }
@@ -631,7 +491,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self);
+                DotNetObject managed = Instance.GetInstance<DotNetObject>((Instance*)self);
                 Trace.WriteLine($"DoubleDoubleProxy = Self: {self} (Obj: {managed}), SEL: {sel}, a: {a}");
                 return managed.DoubleDouble(a);
             }
@@ -642,7 +502,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self);
+                DotNetObject managed = Instance.GetInstance<DotNetObject>((Instance*)self);
                 Trace.WriteLine($"GetIntBlockPropProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
 
                 var intBlock = managed.IntBlockProp;
@@ -667,7 +527,7 @@ namespace MyConsoleApp
         {
             unsafe
             {
-                TestDotNet managed = Instance.GetInstance<TestDotNet>((Instance*)self);
+                DotNetObject managed = Instance.GetInstance<DotNetObject>((Instance*)self);
                 Trace.WriteLine($"SetIntBlockPropProxy = Self: {self} (Obj: {managed}), SEL: {sel}");
 
                 managed.IntBlockProp = (IntBlock)MyWrappers.Instance.GetOrCreateDelegateForBlock(
@@ -677,28 +537,30 @@ namespace MyConsoleApp
             }
         }
 
-        public TestDotNet()
-            : base()
+        public DotNetObject()
+            : this(IntPtr.Zero)
         { }
 
-        protected TestDotNet(id instance)
-            : base(instance, CreateObjectFlags.ObjectInit)
-        { }
+        // The private contructor represents an Objective-C "init" method.
+        private DotNetObject(IntPtr instance)
+            : base(RegisterInstanceFlags.ManagedDefinition, instance)
+        {
+        }
 
-        public IntBlock IntBlockProp
+        public override IntBlock IntBlockProp
         {
             get;
             set;
         }
 
-        public float DoubleFloat(float a)
+        public override float DoubleFloat(float a)
         {
             return a * 2;
         }
 
-        public double DoubleDouble(double a)
+        public override double DoubleDouble(double a)
         {
-            return a * 2;
+            return base.DoubleDouble(a);
         }
     }
 
@@ -711,40 +573,34 @@ namespace MyConsoleApp
             Registrar.Initialize(new (Type, string, Registrar.FactoryFunc)[]
             {
                 (typeof(NSObject), nameof(NSObject), (id i, CreateObjectFlags f) => new NSObject(i)),
-                (typeof(TestObjC), nameof(TestObjC), (id i, CreateObjectFlags f) => new TestObjC(i)),
+                (typeof(ObjCObject), nameof(ObjCObject), (id i, CreateObjectFlags f) => new ObjCObject(i)),
             });
 
-            var testObjC = new TestObjC();
+            var testObjC = new ObjCObject();
 
             // Call Objective-C methods
             Console.WriteLine($"DoubleFloat: {testObjC.DoubleFloat((float)Math.PI)}");
             Console.WriteLine($"DoubleDouble: {testObjC.DoubleDouble(Math.PI)}");
-
-            // Call functions from .NET subclass of Objective-C class.
-            var extendTestObjC = new ExtendTestObjC();
-            extendTestObjC.SayHello1();
-            extendTestObjC.SayHello2();
-            testObjC.CallHellos(extendTestObjC);
 
             // Roundtrip Delegate <=> Block
             testObjC.IntBlockProp = (int a) => { return a * 2; };
             Console.WriteLine($"IntBlockProp: {testObjC.IntBlockProp((int)Math.PI)}");
 
             // Roundtrip Delegate <=> Block (static)
-            TestObjC.IntBlockPropStatic = (int a) => { return a * 3; };
-            Console.WriteLine($"IntBlockPropStatic: {TestObjC.IntBlockPropStatic((int)Math.PI)}");
+            ObjCObject.IntBlockPropStatic = (int a) => { return a * 3; };
+            Console.WriteLine($"IntBlockPropStatic: {ObjCObject.IntBlockPropStatic((int)Math.PI)}");
 
             // Use delegates in Objective-C
             testObjC.UseProperties();
 
             // Pass over .NET object and use properties
-            var testDotNet = new TestDotNet();
+            var testDotNet = new DotNetObject();
             testDotNet.IntBlockProp = (int a) => { return a * 2; };
             testObjC.UseTestDotNet(testDotNet);
 
             // Clean up
             testObjC.IntBlockProp = null;
-            TestObjC.IntBlockPropStatic = null;
+            ObjCObject.IntBlockPropStatic = null;
 
             testObjC.UseTestDotNet(null);
         }

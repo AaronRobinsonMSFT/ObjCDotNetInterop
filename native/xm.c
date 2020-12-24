@@ -111,8 +111,8 @@ static bool eager_finalize(id self)
         lifetime->increment = CleanupInc;
 
         printf("** Autorelease: %p\n", (void*)self);
-        SEL dealloc_sel = sel_registerName("autorelease");
-        ((void(*)(id, SEL))objc_msgSend)(self, dealloc_sel);
+        SEL autorelease_sel = sel_registerName("autorelease");
+        ((void(*)(id, SEL))objc_msgSend)(self, autorelease_sel);
 
         return false;
     }

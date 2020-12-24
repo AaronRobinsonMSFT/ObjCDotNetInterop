@@ -10,24 +10,20 @@ using ObjCRuntime;
 namespace System.Runtime.InteropServices.ObjectiveC
 {
     [Flags]
-    public enum CreateInstanceFlags
+    public enum RegisterInstanceFlags
     {
-        None,
+        None = 0,
 
         /// <summary>
-        /// The supplied managed object should be check if it is a
-        /// wrapped Objective-C instance and not a pure managed object.
-        ///
-        /// If the object is wrapped return the underlying Objective-C
-        /// instance instead of creating a new wrapper.
+        /// The type to register was defined in managed code.
         /// </summary>
-        Unwrap,
+        ManagedDefinition = 1,
     }
 
     [Flags]
     public enum CreateObjectFlags
     {
-        None,
+        None = 0,
 
         /// <summary>
         /// The supplied Objective-C instance should be check if it is a
@@ -36,30 +32,29 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// If the instance is wrapped return the underlying managed object
         /// instead of creating a new wrapper.
         /// </summary>
-        Unwrap,
-
-        /// <summary>
-        /// Used to indicate the Objective-C instance was created as a wrapper
-        /// for the supplied managed object and should be initialized.
-        /// </summary>
-        ObjectInit,
+        Unwrap = 1,
 
         /// <summary>
         /// Let the .NET runtime participate in lifetime management.
         /// </summary>
-        ManageLifetime,
+        /// <remarks>
+        /// Using this optional is always possible but required if the
+        /// created object will contain managed state that must be kept
+        /// alive even without a managed reference.
+        /// </remarks>
+        ManageLifetime = 2,
     }
 
     [Flags]
     public enum CreateBlockFlags
     {
-        None,
+        None = 0,
     }
 
     [Flags]
     public enum CreateDelegateFlags
     {
-        None,
+        None = 0,
 
         /// <summary>
         /// The supplied Objective-C block should be check if it is a
@@ -68,7 +63,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// If the instance is wrapped return the underlying Delegate
         /// instead of creating a new wrapper.
         /// </summary>
-        Unwrap,
+        Unwrap = 1,
     }
 
     // Internal data structure for managing reference counted lifetime.
@@ -169,99 +164,61 @@ namespace System.Runtime.InteropServices.ObjectiveC
     }
 
     /// <summary>
+    /// Base type for all types participating in Objective-C interop.
+    /// </summary>
+    public abstract class ObjectiveCBase : IDisposable
+    {
+        public static readonly IntPtr InvalidInstanceValue = (IntPtr)(-1);
+        protected IntPtr instance = ObjectiveCBase.InvalidInstanceValue;
+
+        internal IntPtr Instance
+        {
+            get => this.instance;
+        }
+
+        protected ObjectiveCBase() // All object scenarios
+        {
+        }
+
+        ~ObjectiveCBase()
+            => this.Dispose(disposing: false);
+
+        public void Dispose()
+            => this.Dispose(disposing: true);
+
+        protected virtual void Dispose(bool disposing)
+            => throw new NotImplementedException();
+    }
+
+    /// <summary>
     /// Class used to create wrappers for interoperability with the Objective-C runtime.
     /// </summary>
     public abstract class Wrappers
     {
+        #region Object API
         /// <summary>
-        /// Register the current wrappers instance as the global one for the system.
+        /// Register the associated instances with one another.
         /// </summary>
+        /// <param name="instance">The Objective-C instance</param>
+        /// <param name="obj">The managed object</param>
+        /// <param name="flags">Flags to help with registration</param>
         /// <remarks>
-        /// Registering as the global instance will call this implementation's
-        /// <see cref="GetMessageSendCallbacks(out IntPtr, out IntPtr, out IntPtr, out IntPtr, out IntPtr)"/> and
-        /// pass the pointers to the runtime to override the resolved pointers.
+        /// Called when:
+        ///   - When an Objective-C projected type is created in managed code (e.g. new NSObject()).
+        ///   - When a .NET defined Objective-C type is created in managed code (e.g. new DotNetObject()).
+        ///   - When a .NET defined Objective-C type is created in Objective-C code (e.g. [[DotNetObject alloc] init]).
         /// </remarks>
-        public void RegisterAsGlobal()
+        public void RegisterInstanceWithObject(IntPtr instance, ObjectiveCBase obj, RegisterInstanceFlags flags)
         {
-            this.GetMessageSendCallbacks(
-                out IntPtr objc_msgSend,
-                out IntPtr objc_msgSend_fpret,
-                out IntPtr objc_msgSend_stret,
-                out IntPtr objc_msgSendSuper,
-                out IntPtr objc_msgSendSuper_stret);
-
-            xm.clr_SetGlobalMessageSendCallbacks(
-                objc_msgSend,
-                objc_msgSend_fpret,
-                objc_msgSend_stret,
-                objc_msgSendSuper,
-                objc_msgSendSuper_stret);
-        }
-
-        /// <summary>
-        /// Get or create a Objective-C wrapper for the supplied managed object.
-        /// </summary>
-        /// <param name="instance">A managed object to wrap</param>
-        /// <param name="flags">Flags for creation</param>
-        /// <returns>An Objective-C wrapper</returns>
-        /// <see cref="ComputeInstanceClass(object, CreateInstanceFlags)"/>
-        public IntPtr GetOrCreateInstanceForObject(object instance, CreateInstanceFlags flags)
-        {
-            IntPtr wrapper;
-            if (flags.HasFlag(CreateInstanceFlags.Unwrap)
-                && Internals.TryGetIdentity(instance, RuntimeOrigin.ObjectiveC, out wrapper))
+            var origin = RuntimeOrigin.ObjectiveC;
+            if (flags.HasFlag(RegisterInstanceFlags.ManagedDefinition))
             {
-                return wrapper;
+                origin = RuntimeOrigin.DotNet;
+                InitWrapper(instance, obj);
             }
 
-            if (Internals.TryGetIdentity(instance, RuntimeOrigin.DotNet, out wrapper))
-            {
-                return wrapper;
-            }
-
-            unsafe
-            {
-                IntPtr klass = this.ComputeInstanceClass(instance, flags);
-                wrapper = AllocateObjCInstance(klass);
-                InitWrapper(wrapper, instance);
-            }
-
-            Internals.RegisterIdentity(instance, wrapper, RuntimeOrigin.DotNet);
-            return wrapper;
+            Internals.RegisterIdentity(obj, instance, origin);
         }
-
-        private unsafe static IntPtr AllocateObjCInstance(IntPtr klass)
-        {
-            // Allocate additional memory for lifetime pointer.
-            return xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime*));
-        }
-
-        private unsafe static void InitWrapper(IntPtr wrapper, object instance)
-        {
-            var lifetime = (ManagedObjectWrapperLifetime*)Marshal.AllocCoTaskMem(sizeof(ManagedObjectWrapperLifetime));
-            IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
-            Trace.WriteLine($"Object: Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
-
-            // N.B. see details in xm.c regarding the ManagedObjectWrapperLifetime type.
-            lifetime->GCHandle = gcptr;
-            lifetime->RefCount = 1;
-            lifetime->Increment = 1;
-
-            var lifetimePtr = (ManagedObjectWrapperLifetime**)xm.object_getIndexedIvars(wrapper);
-            *lifetimePtr = lifetime;
-        }
-
-        /// <summary>
-        /// Called if there is currently no existing Objective-C wrapper for an object.
-        /// </summary>
-        /// <param name="instance">A managed object to wrap</param>
-        /// <param name="flags">Flags for creation</param>
-        /// <returns>An Objective-C pointer to a class</returns>
-        /// <remarks>
-        /// Defer to the implementer for determining the <see cref="https://developer.apple.com/documentation/objectivec/class">Objective-C Class</see>
-        /// that should be used to wrap the managed object.
-        /// </remarks>
-        protected abstract IntPtr ComputeInstanceClass(object instance, CreateInstanceFlags flags);
 
         /// <summary>
         /// Get or create a managed wrapper for the supplied Objective-C object.
@@ -269,6 +226,10 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <param name="instance">An Objective-C object</param>
         /// <param name="flags">Flags for creation</param>
         /// <returns>A managed wrapper</returns>
+        /// <remarks>
+        /// Called when:
+        ///   - An Objective-C instance enters the managed environment.
+        /// </remarks>
         /// <see cref="CreateObject(IntPtr, CreateObjectFlags)"/>
         public object GetOrCreateObjectForInstance(IntPtr instance, CreateObjectFlags flags)
         {
@@ -295,63 +256,118 @@ namespace System.Runtime.InteropServices.ObjectiveC
         }
 
         /// <summary>
+        /// Called by <see cref="GetOrCreateObjectForInstance(IntPtr, CreateObjectFlags)"/>.
+        /// </summary>
+        /// <param name="instance">An Objective-C instance</param>
+        /// <param name="flags">Flags for creation</param>
+        /// <returns>A managed wrapper</returns>
+        /// <remarks>
+        /// Called when:
+        ///   - The instance has no currently associated managed object.
+        /// </remarks>
+        protected abstract ObjectiveCBase CreateObject(IntPtr instance, CreateObjectFlags flags);
+
+        /// <summary>
+        /// Get the associated Objective-C instance.
+        /// </summary>
+        /// <param name="obj">Managed wrapper base</param>
+        /// <returns>The Objective-C instance</returns>
+        /// <remarks>
+        /// Called when:
+        ///   - Passing an object to the Objective-C runtime when created by an unknown <see cref="Wrappers"/> implementation.
+        /// </remarks>
+        public IntPtr GetInstanceFromObject(ObjectiveCBase obj)
+        {
+            return obj.Instance;
+        }
+
+        /// <summary>
         /// Separate the object wrapper from the underlying Objective-C instance.
         /// </summary>
         /// <param name="wrapper">Managed wrapper</param>
-        public void SeparateObjectFromInstance(object wrapper)
+        /// <remarks>
+        /// Called when:
+        ///   - The managed object should be separated from its Objective-C instance.
+        /// </remarks>
+        public void SeparateObjectFromInstance(ObjectiveCBase wrapper)
         {
             Internals.UnregisterObjectWrapper(wrapper);
         }
 
         /// <summary>
-        /// Called if there is currently no existing managed wrapper.
+        /// Register the current wrappers instance as the global one for the system.
         /// </summary>
-        /// <param name="instance">An Objective-C instance</param>
-        /// <param name="flags">Flags for creation</param>
-        /// <returns>A managed wrapper</returns>
-        protected abstract object CreateObject(IntPtr instance, CreateObjectFlags flags);
-
-        /// <summary>
-        /// Get or provide a managed object wrapper for the supplied Objective-C object.
-        /// </summary>
-        /// <param name="instance">An Objective-C object</param>
-        /// <param name="flags">Flags for creation</param>
-        /// <param name="wrapperMaybe">The managed wrapper to use if one doesn't exist</param>
-        /// <returns>A managed wrapper</returns>
-        public object GetOrRegisterObjectForInstance(IntPtr instance, CreateObjectFlags flags, object wrapperMaybe)
+        /// <remarks>
+        /// Registering as the global instance will call this implementation's
+        /// <see cref="GetMessageSendCallbacks(out IntPtr, out IntPtr, out IntPtr, out IntPtr, out IntPtr)"/> and
+        /// pass the pointers to the runtime to override the resolved pointers.
+        /// </remarks>
+        public void RegisterAsGlobal()
         {
-            var origin = RuntimeOrigin.ObjectiveC;
+            this.GetMessageSendCallbacks(
+                out IntPtr objc_msgSend,
+                out IntPtr objc_msgSend_fpret,
+                out IntPtr objc_msgSend_stret,
+                out IntPtr objc_msgSendSuper,
+                out IntPtr objc_msgSendSuper_stret);
 
-            object wrapper;
-            if (flags.HasFlag(CreateObjectFlags.ObjectInit))
-            {
-                InitWrapper(instance, wrapperMaybe);
-                origin = RuntimeOrigin.DotNet;
-            }
-            else
-            {
-                if (flags.HasFlag(CreateObjectFlags.Unwrap) && xm.clr_isRuntimeAllocated(instance))
-                {
-                    unsafe
-                    {
-                        var instPtr = (Instance*)instance.ToPointer();
-                        return Instance.GetInstance<object>(instPtr);
-                    }
-                }
-
-                if (Internals.TryGetObject(instance, RuntimeOrigin.ObjectiveC, out wrapper))
-                {
-                    return wrapper;
-                }
-            }
-
-            // [TODO] Handle wrapper lifetime
-            Internals.RegisterIdentity(wrapperMaybe, instance, origin);
-            wrapper = wrapperMaybe;
-
-            return wrapper;
+            xm.clr_SetGlobalMessageSendCallbacks(
+                objc_msgSend,
+                objc_msgSend_fpret,
+                objc_msgSend_stret,
+                objc_msgSendSuper,
+                objc_msgSendSuper_stret);
         }
 
+        /// <summary>
+        /// Get function pointers for Objective-C runtime message passing.
+        /// </summary>
+        /// <remarks>
+        /// Providing these overrides can enable support for Objective-C
+        /// exception propagation and variadic argument support.
+        ///
+        /// Allows the implementer of the global Objective-C wrapper class
+        /// to provide overrides to the 'objc_msgSend*' APIs for the
+        /// Objective-C runtime.
+        /// </remarks>
+        public abstract void GetMessageSendCallbacks(
+            out IntPtr objc_msgSend,
+            out IntPtr objc_msgSend_fpret,
+            out IntPtr objc_msgSend_stret,
+            out IntPtr objc_msgSendSuper,
+            out IntPtr objc_msgSendSuper_stret);
+
+        /// <summary>
+        /// Get the lifetime and memory management functions for all managed
+        /// type definitions that are projected into the Objective-C environment.
+        /// </summary>
+        /// <param name="allocImpl">Alloc implementation</param>
+        /// <param name="deallocImpl">Dealloc implementation</param>
+        /// <param name="retainImpl">Retain implementation</param>
+        /// <param name="releaseImpl">Release implementation</param>
+        /// <remarks>
+        /// See <see href="https://developer.apple.com/documentation/objectivec/nsobject/1571958-alloc">alloc</see>.
+        /// See <see href="https://developer.apple.com/documentation/objectivec/nsobject/1571947-dealloc">dealloc</see>.
+        /// See <see href="https://developer.apple.com/documentation/objectivec/1418956-nsobject/1571946-retain">retain</see>.
+        /// See <see href="https://developer.apple.com/documentation/objectivec/1418956-nsobject/1571957-release">release</see>.
+        /// </remarks>
+        public static void GetLifetimeMethods(
+            out IntPtr allocImpl,
+            out IntPtr deallocImpl,
+            out IntPtr retainImpl,
+            out IntPtr releaseImpl)
+        {
+            unsafe
+            {
+                allocImpl = (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr>)&AllocProxy;
+                deallocImpl = (IntPtr)xm.clr_dealloc_Raw;
+                retainImpl = (IntPtr)xm.clr_retain_Raw;
+                releaseImpl = (IntPtr)xm.clr_release_Raw;
+            }
+        }
+        #endregion Object API
+
+        #region Block API
         /// <summary>
         /// Create a Objective-C Block for the supplied Delegate.
         /// </summary>
@@ -387,7 +403,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <param name="del">Delegate for block</param>
         /// <param name="flags">Flags for creation</param>
         /// <param name="signature">Type Encoding for returned block</param>
-        /// <returns>A callable delegate to the Objective-C runtime</returns>
+        /// <returns>A callable function pointer for Block dispatch by the Objective-C runtime</returns>
         /// <remarks>
         /// Defer to the implementer for determining the <see cref="https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html#//apple_ref/doc/uid/TP40008048-CH100">Block signature</see>
         /// that should be used to project the managed Delegate.
@@ -461,68 +477,9 @@ namespace System.Runtime.InteropServices.ObjectiveC
         {
             ReleaseBlock(ref block);
         }
+        #endregion Block API
 
-        /// <summary>
-        /// Create a <see cref="Wrappers"/> instance.
-        /// </summary>
-        protected Wrappers()
-        {
-        }
-
-        /// <summary>
-        /// Get function pointers for Objective-C runtime message passing.
-        /// </summary>
-        /// <remarks>
-        /// Providing these overrides can enable support for Objective-C
-        /// exception propagation and variadic argument support.
-        ///
-        /// Allows the implementer of the global Objective-C wrapper class
-        /// to provide overrides to the 'objc_msgSend*' APIs for the
-        /// Objective-C runtime.
-        /// </remarks>
-        public abstract void GetMessageSendCallbacks(
-            out IntPtr objc_msgSend,
-            out IntPtr objc_msgSend_fpret,
-            out IntPtr objc_msgSend_stret,
-            out IntPtr objc_msgSendSuper,
-            out IntPtr objc_msgSendSuper_stret);
-
-        /// <summary>
-        /// Get the lifetime and memory management functions for all managed
-        /// type definitions that are projected into the Objective-C environment.
-        /// </summary>
-        /// <param name="allocImpl">Alloc implementation</param>
-        /// <param name="deallocImpl">Dealloc implementation</param>
-        /// <param name="retainImpl">Retain implementation</param>
-        /// <param name="releaseImpl">Release implementation</param>
-        /// <remarks>
-        /// See <see href="https://developer.apple.com/documentation/objectivec/nsobject/1571958-alloc">alloc</see>.
-        /// See <see href="https://developer.apple.com/documentation/objectivec/nsobject/1571947-dealloc">dealloc</see>.
-        /// See <see href="https://developer.apple.com/documentation/objectivec/1418956-nsobject/1571946-retain">retain</see>.
-        /// See <see href="https://developer.apple.com/documentation/objectivec/1418956-nsobject/1571957-release">release</see>.
-        /// </remarks>
-        public static void GetLifetimeMethods(
-            out IntPtr allocImpl,
-            out IntPtr deallocImpl,
-            out IntPtr retainImpl,
-            out IntPtr releaseImpl)
-        {
-            unsafe
-            {
-                allocImpl = (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr>)&AllocProxy;
-                deallocImpl = (IntPtr)xm.clr_dealloc_Raw;
-                retainImpl = (IntPtr)xm.clr_retain_Raw;
-                releaseImpl = (IntPtr)xm.clr_release_Raw;
-            }
-        }
-
-        [UnmanagedCallersOnly]
-        private unsafe static IntPtr AllocProxy(IntPtr cls, IntPtr sel)
-        {
-            IntPtr new_id = AllocateObjCInstance(cls);
-            return new_id;
-        }
-
+        #region Threading API
         /// <summary>
         /// Provides a way to indicate to the runtime that the .NET ThreadPool should
         /// add a NSAutoreleasePool to a thread and handle draining.
@@ -536,6 +493,43 @@ namespace System.Runtime.InteropServices.ObjectiveC
         public static void EnableAutoReleasePoolsForThreadPool()
         {
             throw new NotImplementedException();
+        }
+        #endregion Threading API
+
+        /// <summary>
+        /// Create a <see cref="Wrappers"/> instance.
+        /// </summary>
+        protected Wrappers()
+        {
+        }
+
+        #region Implementation Details
+        private unsafe static IntPtr AllocateObjCInstance(IntPtr klass)
+        {
+            // Allocate additional memory for lifetime pointer.
+            return xm.class_createInstance(klass, sizeof(ManagedObjectWrapperLifetime*));
+        }
+
+        private unsafe static void InitWrapper(IntPtr wrapper, object instance)
+        {
+            var lifetime = (ManagedObjectWrapperLifetime*)Marshal.AllocCoTaskMem(sizeof(ManagedObjectWrapperLifetime));
+            IntPtr gcptr = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
+            Trace.WriteLine($"Object: Lifetime: 0x{(nint)lifetime:x}, GCHandle: 0x{gcptr.ToInt64():x}");
+
+            // N.B. see details in xm.c regarding the ManagedObjectWrapperLifetime type.
+            lifetime->GCHandle = gcptr;
+            lifetime->RefCount = 1;
+            lifetime->Increment = 1;
+
+            var lifetimePtr = (ManagedObjectWrapperLifetime**)xm.object_getIndexedIvars(wrapper);
+            *lifetimePtr = lifetime;
+        }
+
+        [UnmanagedCallersOnly]
+        private unsafe static IntPtr AllocProxy(IntPtr cls, IntPtr sel)
+        {
+            IntPtr new_id = AllocateObjCInstance(cls);
+            return new_id;
         }
 
         [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -785,5 +779,6 @@ namespace System.Runtime.InteropServices.ObjectiveC
                 }
             }
         }
+        #endregion Implementation Details
     }
 }
