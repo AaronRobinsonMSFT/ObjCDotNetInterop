@@ -176,18 +176,26 @@ namespace System.Runtime.InteropServices.ObjectiveC
             get => this.instance;
         }
 
-        protected ObjectiveCBase() // All object scenarios
+        /// <summary>
+        /// Create a <see cref="ObjectiveCBase"/> instance.
+        /// </summary>
+        protected ObjectiveCBase()
         {
         }
 
         ~ObjectiveCBase()
             => this.Dispose(disposing: false);
 
+        /// <inheritdoc />
         public void Dispose()
             => this.Dispose(disposing: true);
 
+        /// <summary>
+        /// Method called during Dispose().
+        /// </summary>
+        /// <param name="disposing">If called from <see cref="Dispose"/></param>
         protected virtual void Dispose(bool disposing)
-            => throw new NotImplementedException();
+            => this.Dispose(disposing: true);
     }
 
     /// <summary>
