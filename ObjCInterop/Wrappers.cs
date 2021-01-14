@@ -17,6 +17,14 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <summary>
         /// The type to register was defined in managed code.
         /// </summary>
+        /// <remarks>
+        /// Objective-C types defined are in managed code are allocated
+        /// with additional bytes to carry a GC Handle used for life time
+        /// management. This data structure can be used by the consuming
+        /// Objective-C interop implementation. The data structure is an instance
+        /// of <see cref="ManagedObjectWrapperLifetime"/>. It can be accessed
+        /// on the allocation by through the object_getIndexedIvars Objective-C runtime API.
+        /// </remarks>
         ManagedDefinition = 1,
     }
 
@@ -66,11 +74,20 @@ namespace System.Runtime.InteropServices.ObjectiveC
         Unwrap = 1,
     }
 
-    // Internal data structure for managing reference counted lifetime.
-    internal struct ManagedObjectWrapperLifetime
+    /// <summary>
+    /// Data structure for managing object wrapper lifetime.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ManagedObjectWrapperLifetime
     {
-        public IntPtr GCHandle;
-        public int RefCount;
+        /// <summary>
+        /// Allocated space for Objective-C interop implementation
+        /// to use as needed. Will be initialized to nuint.MaxValue.
+        /// </summary>
+        public nuint Scratch;
+
+        // Internal fields
+        internal IntPtr GCHandle;
     }
 
     /// <summary>
@@ -111,7 +128,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         internal unsafe BlockDescriptor* BlockDescriptor;
 
         // Extension of ABI to handle .NET lifetime.
-        internal unsafe ManagedObjectWrapperLifetime* Lifetime;
+        internal unsafe BlockLifetime* Lifetime;
 
         /// <summary>
         /// Get <typeparamref name="T"/> type from the supplied Block.
@@ -136,6 +153,14 @@ namespace System.Runtime.InteropServices.ObjectiveC
         public delegate* unmanaged[Cdecl]<BlockLiteral*, BlockLiteral*, void> Copy_helper;
         public delegate* unmanaged[Cdecl]<BlockLiteral*, void> Dispose_helper;
         public void* Signature;
+    }
+
+    // Internal data structure for managing Block lifetime.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BlockLifetime
+    {
+        public IntPtr GCHandle;
+        public int RefCount;
     }
 
     /// <summary>
@@ -363,33 +388,25 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// </summary>
         /// <param name="allocImpl">Alloc implementation</param>
         /// <param name="deallocImpl">Dealloc implementation</param>
-        /// <param name="retainImpl">Retain implementation</param>
-        /// <param name="releaseImpl">Release implementation</param>
         /// <remarks>
         /// See <see href="https://developer.apple.com/documentation/objectivec/nsobject/1571958-alloc">alloc</see>.
         /// See <see href="https://developer.apple.com/documentation/objectivec/nsobject/1571947-dealloc">dealloc</see>.
-        /// See <see href="https://developer.apple.com/documentation/objectivec/1418956-nsobject/1571946-retain">retain</see>.
-        /// See <see href="https://developer.apple.com/documentation/objectivec/1418956-nsobject/1571957-release">release</see>.
         /// </remarks>
         public static void GetLifetimeMethods(
             out IntPtr allocImpl,
-            out IntPtr deallocImpl,
-            out IntPtr retainImpl,
-            out IntPtr releaseImpl)
+            out IntPtr deallocImpl)
         {
             unsafe
             {
-                allocImpl = (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr>)&AllocProxy;
+                allocImpl = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr>)&AllocProxy;
                 deallocImpl = (IntPtr)xm.clr_dealloc_Raw;
-                retainImpl = (IntPtr)xm.clr_retain_Raw;
-                releaseImpl = (IntPtr)xm.clr_release_Raw;
             }
         }
         #endregion Object API
 
         #region Block API
         /// <summary>
-        /// Create a Objective-C Block for the supplied Delegate.
+        /// Create an Objective-C Block for the supplied Delegate.
         /// </summary>
         /// <param name="instance">A Delegate to wrap</param>
         /// <param name="flags">Flags for creation</param>
@@ -543,13 +560,13 @@ namespace System.Runtime.InteropServices.ObjectiveC
 
             // N.B. see details in xm.c regarding the ManagedObjectWrapperLifetime type.
             lifetime->GCHandle = gcptr;
-            lifetime->RefCount = 1;
+            lifetime->Scratch = nuint.MaxValue;
 
             var lifetimePtr = (ManagedObjectWrapperLifetime**)xm.object_getIndexedIvars(wrapper);
             *lifetimePtr = lifetime;
         }
 
-        [UnmanagedCallersOnly]
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
         private unsafe static IntPtr AllocProxy(IntPtr cls, IntPtr sel)
         {
             IntPtr new_id = AllocateObjCInstance(cls);
@@ -614,7 +631,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         private struct BlockDetails
         {
             public BlockDescriptor Desc;
-            public ManagedObjectWrapperLifetime Lifetime;
+            public BlockLifetime Lifetime;
             public IntPtr Invoker;
         }
 
@@ -658,7 +675,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
             (1 << 25)       // copy/dispose helpers
             | (1 << 30);    // Function signature
 
-        private unsafe static BlockLiteral CreateBlock(BlockDescriptor* desc, ManagedObjectWrapperLifetime* lifetime, IntPtr invoker)
+        private unsafe static BlockLiteral CreateBlock(BlockDescriptor* desc, BlockLifetime* lifetime, IntPtr invoker)
         {
             return new BlockLiteral()
             {

@@ -452,7 +452,7 @@ namespace MyConsoleApp
 
             // Override default lifetime/memory management methods.
             {
-                Wrappers.GetLifetimeMethods(out IntPtr allocImpl, out IntPtr deallocImpl, out IntPtr retainImpl, out IntPtr releaseImpl);
+                Wrappers.GetLifetimeMethods(out IntPtr allocImpl, out IntPtr deallocImpl);
 
                 // Static methods
                 id metaClass = xm.object_getClass(ClassType);
@@ -462,10 +462,6 @@ namespace MyConsoleApp
                 // Instance methods
                 SEL deallocSelector = xm.sel_registerName("dealloc");
                 xm.class_addMethod(ClassType, deallocSelector, deallocImpl, "v@:");
-                SEL retainSelector = xm.sel_registerName("retain");
-                SEL releaseSelector = xm.sel_registerName("release");
-                xm.class_addMethod(ClassType, retainSelector, retainImpl, ":@:");
-                xm.class_addMethod(ClassType, releaseSelector, releaseImpl, "v@:");
             }
 
             // Register the type with the Objective-C runtime.
