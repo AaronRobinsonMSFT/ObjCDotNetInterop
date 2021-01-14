@@ -16,7 +16,7 @@ using IMP = System.IntPtr;
 
 namespace MyConsoleApp
 {
-    public sealed class MyWrappers : Wrappers
+    internal sealed class MyWrappers : Wrappers
     {
         public static readonly Wrappers Instance = new MyWrappers();
 
@@ -38,11 +38,16 @@ namespace MyConsoleApp
             throw new NotSupportedException();
         }
 
-        protected override ObjectiveCBase CreateObject(IntPtr instance, CreateObjectFlags flags)
+        protected override ObjectiveCBase CreateObject(SEL instance, Type typeAssociation, CreateObjectFlags flags)
         {
             string className = xm.object_getClassName(instance);
             var factory = Registrar.GetFactory(className);
             return factory(instance, flags);
+        }
+
+        protected override unsafe delegate* unmanaged[Cdecl]<SEL, int> GetReferenceCallback(bool isManagedRegistration)
+        {
+            throw new NotImplementedException();
         }
 
         public override void GetMessageSendCallbacks(
@@ -140,13 +145,13 @@ namespace MyConsoleApp
     // Generated for supported Block types
     internal static class Trampolines
     {
-        public static IntBlock CreateIntBlock(BlockDispatch dispatch)
+        public static IntBlock CreateIntBlock(IntPtr block, IntPtr invoker)
         {
             return new IntBlock((int a) =>
             {
                 unsafe
                 {
-                    return ((delegate* unmanaged[Cdecl]<id, int, int>)dispatch.Invoker)(dispatch.Block, a);
+                    return ((delegate* unmanaged[Cdecl]<id, int, int>)invoker)(block, a);
                 }
             });
         }
@@ -157,7 +162,7 @@ namespace MyConsoleApp
     }
 
     // Base type for all Objective-C types.
-    class NSObject : ObjectiveCBase
+    public class NSObject : ObjectiveCBase
     {
         // Call to instantiate a new NSObject from managed code.
         public NSObject()
@@ -181,7 +186,7 @@ namespace MyConsoleApp
                 this.instance = SendAllocMessage(this);
             }
 
-            MyWrappers.Instance.RegisterInstanceWithObject(this.instance, this, flags);
+            MyWrappers.Instance.RegisterInstanceWithObject(this.instance, typeof(NSObject), this, flags);
 
             static IntPtr SendAllocMessage(NSObject obj)
             {
@@ -199,7 +204,7 @@ namespace MyConsoleApp
     public delegate int IntBlock(int a);
 
     // Projected Objective-C type into .NET
-    class ObjCObject : NSObject
+    public class ObjCObject : NSObject
     {
         private static readonly Class ClassType;
         private static readonly SEL DoubleFloatSelector;
@@ -401,7 +406,7 @@ namespace MyConsoleApp
     }
 
     // Implemented dotnet type projected into Objective-C
-    class DotNetObject : ObjCObject
+    public class DotNetObject : ObjCObject
     {
         private static readonly Class ClassType;
 

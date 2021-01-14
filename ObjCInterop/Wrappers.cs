@@ -71,7 +71,6 @@ namespace System.Runtime.InteropServices.ObjectiveC
     {
         public IntPtr GCHandle;
         public int RefCount;
-        public int Increment;
     }
 
     /// <summary>
@@ -140,36 +139,13 @@ namespace System.Runtime.InteropServices.ObjectiveC
     }
 
     /// <summary>
-    /// Type used to represent a Block's invoking function and context.
-    /// </summary>
-    public sealed class BlockDispatch
-    {
-        /// <summary>
-        /// Block instance.
-        /// </summary>
-        public IntPtr Block { get; init; }
-
-        /// <summary>
-        /// The function pointer to invoke.
-        /// </summary>
-        /// <remarks>
-        /// The C# function pointer syntax is dependent on the signature of the
-        /// Block, but does takes the <see cref="Block"/> as the first argument.
-        /// For example:
-        /// <code>
-        /// ((delegate* unmanaged[Cdecl]&lt;IntPtr [, arg]*, ret&gt)Invoker)(Block, ...);
-        /// </code>
-        /// </remarks>
-        public IntPtr Invoker { get; init; }
-    }
-
-    /// <summary>
     /// Base type for all types participating in Objective-C interop.
     /// </summary>
     public abstract class ObjectiveCBase : IDisposable
     {
         public static readonly IntPtr InvalidInstanceValue = (IntPtr)(-1);
         protected IntPtr instance = ObjectiveCBase.InvalidInstanceValue;
+        private bool isDisposed = false;
 
         internal IntPtr Instance
         {
@@ -195,7 +171,14 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// </summary>
         /// <param name="disposing">If called from <see cref="Dispose"/></param>
         protected virtual void Dispose(bool disposing)
-            => this.Dispose(disposing: true);
+        {
+            if (this.isDisposed)
+            {
+                return;
+            }
+
+            this.isDisposed = true;
+        }
     }
 
     /// <summary>
@@ -208,6 +191,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// Register the associated instances with one another.
         /// </summary>
         /// <param name="instance">The Objective-C instance</param>
+        /// <param name="typeAssociation">A strong type mapping to the <paramref name="instance"/>.</param>
         /// <param name="obj">The managed object</param>
         /// <param name="flags">Flags to help with registration</param>
         /// <remarks>
@@ -215,8 +199,14 @@ namespace System.Runtime.InteropServices.ObjectiveC
         ///   - When an Objective-C projected type is created in managed code (e.g. new NSObject()).
         ///   - When a .NET defined Objective-C type is created in managed code (e.g. new DotNetObject()).
         ///   - When a .NET defined Objective-C type is created in Objective-C code (e.g. [[DotNetObject alloc] init]).
+        ///
+        /// The supplied <paramref name="typeAssociation"/> is required to inherit from <see cref="ObjectiveCBase"/>.
         /// </remarks>
-        public void RegisterInstanceWithObject(IntPtr instance, ObjectiveCBase obj, RegisterInstanceFlags flags)
+        public void RegisterInstanceWithObject(
+            IntPtr instance,
+            Type typeAssociation,
+            ObjectiveCBase obj,
+            RegisterInstanceFlags flags)
         {
             var origin = RuntimeOrigin.ObjectiveC;
             if (flags.HasFlag(RegisterInstanceFlags.ManagedDefinition))
@@ -232,14 +222,17 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// Get or create a managed wrapper for the supplied Objective-C object.
         /// </summary>
         /// <param name="instance">An Objective-C object</param>
+        /// <param name="typeAssociation">A strong type mapping to the <paramref name="instance"/>.</param>
         /// <param name="flags">Flags for creation</param>
         /// <returns>A managed wrapper</returns>
         /// <remarks>
         /// Called when:
         ///   - An Objective-C instance enters the managed environment.
+        ///
+        /// The supplied <paramref name="typeAssociation"/> is required to inherit from <see cref="ObjectiveCBase"/>.
         /// </remarks>
-        /// <see cref="CreateObject(IntPtr, CreateObjectFlags)"/>
-        public object GetOrCreateObjectForInstance(IntPtr instance, CreateObjectFlags flags)
+        /// <see cref="CreateObject(IntPtr, Type , CreateObjectFlags)"/>
+        public object GetOrCreateObjectForInstance(IntPtr instance, Type typeAssociation, CreateObjectFlags flags)
         {
             if (flags.HasFlag(CreateObjectFlags.Unwrap) && xm.clr_isRuntimeAllocated(instance))
             {
@@ -256,7 +249,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
                 return wrapper;
             }
 
-            wrapper = this.CreateObject(instance, flags);
+            wrapper = this.CreateObject(instance, typeAssociation, flags);
 
             // [TODO] Handle wrapper lifetime
             Internals.RegisterIdentity(wrapper, instance, RuntimeOrigin.ObjectiveC);
@@ -264,16 +257,35 @@ namespace System.Runtime.InteropServices.ObjectiveC
         }
 
         /// <summary>
-        /// Called by <see cref="GetOrCreateObjectForInstance(IntPtr, CreateObjectFlags)"/>.
+        /// Called by <see cref="GetOrCreateObjectForInstance(IntPtr, Type, CreateObjectFlags)"/>.
         /// </summary>
         /// <param name="instance">An Objective-C instance</param>
+        /// <param name="typeAssociation">A strong type mapping to the <paramref name="instance"/>.</param>
         /// <param name="flags">Flags for creation</param>
         /// <returns>A managed wrapper</returns>
         /// <remarks>
         /// Called when:
         ///   - The instance has no currently associated managed object.
         /// </remarks>
-        protected abstract ObjectiveCBase CreateObject(IntPtr instance, CreateObjectFlags flags);
+        protected abstract ObjectiveCBase CreateObject(IntPtr instance, Type typeAssociation, CreateObjectFlags flags);
+
+        /// <summary>
+        /// Get a callback to call when checking for unmanaged references.
+        /// </summary>
+        /// <param name="isManagedRegistration">Boolean indicating the callback is for a managed registered instance.</param>
+        /// <returns>An unmanaged callback</returns>
+        /// <remarks>
+        /// The returned callback in C could be defined as below. The argument
+        /// is the Objective-C instance.
+        /// <code>
+        /// int ref_callback(void* id)
+        /// {
+        ///    return 0; // Return zero for no reference or 1 for reference
+        /// }
+        /// </code>
+        /// </remarks>
+        /// <see cref="RegisterInstanceFlags.ManagedDefinition"/>
+        protected unsafe abstract delegate* unmanaged[Cdecl]<IntPtr, int> GetReferenceCallback(bool isManagedRegistration);
 
         /// <summary>
         /// Get the associated Objective-C instance.
@@ -419,11 +431,20 @@ namespace System.Runtime.InteropServices.ObjectiveC
         protected abstract IntPtr GetBlockInvokeAndSignature(Delegate del, CreateBlockFlags flags, out string signature);
 
         /// <summary>
-        /// Delegate describing a factory function for creation from a <see cref="BlockDispatch"/>.
+        /// Delegate describing a factory function for creation of a .NET Delegate wrapper for an Objective-C Block.
         /// </summary>
-        /// <param name="dispatch">BlockDispatch instance</param>
+        /// <param name="block">The Objective-C block instance</param>
+        /// <param name="invoker">The raw pointer to cast to the appropriate function pointer type and invoke</param>
         /// <returns>A Delegate</returns>
-        public delegate Delegate CreateDelegate(BlockDispatch dispatch);
+        /// <remarks>
+        /// The C# function pointer syntax is dependent on the signature of the
+        /// Block, but does takes the block argument as the first argument.
+        /// For example:
+        /// <code>
+        /// ((delegate* unmanaged[Cdecl]&lt;IntPtr [, arg]*, ret&gt)invoker)(block, ...);
+        /// </code>
+        /// </remarks>
+        public delegate Delegate CreateDelegate(IntPtr block, IntPtr invoker);
 
         /// <summary>
         /// Get or create a Delegate to represent the supplied Objective-C Block.
@@ -451,7 +472,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
 
             // Decompose the pointer to the Objective-C Block ABI and retrieve
             // the needed values.
-            BlockDispatch dispatch;
+            IntPtr invoker;
             unsafe
             {
                 // [TODO] Handle cleanup if the below factory function throws
@@ -459,16 +480,12 @@ namespace System.Runtime.InteropServices.ObjectiveC
                 block = (IntPtr)xm.Block_copy((void*)block);
 
                 var blockLiteral = (BlockLiteral*)block;
-                dispatch = new BlockDispatch()
-                {
-                    Block = block,
-                    Invoker = blockLiteral->Invoke
-                };
+                invoker = blockLiteral->Invoke;
             }
 
             // Call the supplied create delegate with the values needed to
             // invoke the Block.
-            Delegate wrappedBlock = createDelegate(dispatch);
+            Delegate wrappedBlock = createDelegate(block: block, invoker: invoker);
 
             // [TODO] Register for block release (i.e. Block_release). Since the Delegate
             // is extending the lifetime of the Block, how does it know when and how to
@@ -527,7 +544,6 @@ namespace System.Runtime.InteropServices.ObjectiveC
             // N.B. see details in xm.c regarding the ManagedObjectWrapperLifetime type.
             lifetime->GCHandle = gcptr;
             lifetime->RefCount = 1;
-            lifetime->Increment = 1;
 
             var lifetimePtr = (ManagedObjectWrapperLifetime**)xm.object_getIndexedIvars(wrapper);
             *lifetimePtr = lifetime;
