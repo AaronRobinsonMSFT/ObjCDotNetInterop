@@ -38,16 +38,11 @@ namespace MyConsoleApp
             throw new NotSupportedException();
         }
 
-        protected override ObjectiveCBase CreateObject(SEL instance, Type typeAssociation, CreateObjectFlags flags)
+        protected override ObjectiveCBase CreateObject(id instance, Type typeAssociation, CreateObjectFlags flags)
         {
             string className = xm.object_getClassName(instance);
             var factory = Registrar.GetFactory(className);
             return factory(instance, flags);
-        }
-
-        protected override unsafe delegate* unmanaged[Cdecl]<SEL, int> GetReferenceCallback(bool isManagedRegistration)
-        {
-            throw new NotImplementedException();
         }
 
         public override void GetMessageSendCallbacks(

@@ -300,6 +300,8 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <param name="isManagedRegistration">Boolean indicating the callback is for a managed registered instance.</param>
         /// <returns>An unmanaged callback</returns>
         /// <remarks>
+        /// Overriding this method provides a mechanism to override the default reference check callback.
+        ///
         /// The returned callback in C could be defined as below. The argument
         /// is the Objective-C instance.
         /// <code>
@@ -310,7 +312,7 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// </code>
         /// </remarks>
         /// <see cref="RegisterInstanceFlags.ManagedDefinition"/>
-        protected unsafe abstract delegate* unmanaged[Cdecl]<IntPtr, int> GetReferenceCallback(bool isManagedRegistration);
+        protected unsafe virtual delegate* unmanaged[Cdecl]<IntPtr, int> GetReferenceCallback(bool isManagedRegistration) => null;
 
         /// <summary>
         /// Get the associated Objective-C instance.

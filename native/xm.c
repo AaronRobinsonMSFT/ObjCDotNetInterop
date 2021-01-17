@@ -91,8 +91,10 @@ static void clr_dealloc(id self, SEL sel)
     super.super_class = class_getSuperclass(object_getClass(self));
     ((void(*)(struct objc_super*, SEL))objc_msgSendSuper)(&super, sel);
 
-    // N.B. The management of the lifetime memory is handled by the SyncBlock cleanup for the object.
-    printf("** CLR weak reference: %p\n", (void*)self);
+    // Once the super dealloc returns, the managed object can be removed
+    // from the look up mapping (i.e. id => wrapper)
+    // delete gcHandle
+    lifetime->gcHandle = NULL;
 }
 
 void* Get_clr_dealloc()
